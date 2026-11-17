@@ -1,8 +1,15 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import type { FamilyHub } from './family-hub.ts';
 import type { MemberRegistry } from './member-registry.ts';
-import type { FamilyGroupRoom, FamilyMember, GroupMessage } from './types.ts';
+import type {
+  FamilyGroupRoom,
+  FamilyMember,
+  GroupMessage,
+  GroupStreamingDraft,
+} from './types.ts';
 
 export const MAX_GROUP_RELAY_TURNS = 6;
 export const MAIN_GROUP_ID = 'family-main';
@@ -15,6 +22,7 @@ interface MutableGroupRoom {
   messages: GroupMessage[];
   readCursors: Record<string, number>;
   activeSpeakerId: string | null;
+  streamingDraft: GroupStreamingDraft | null;
   lastPassMemberName?: string;
   running: boolean;
   relayAbort: AbortController | null;
@@ -43,11 +51,14 @@ function isPassReply(text: string): boolean {
 export class GroupChatEngine {
   private readonly hub: FamilyHub;
   private readonly registry: MemberRegistry;
+  private readonly storageDir?: string;
   private readonly rooms = new Map<string, MutableGroupRoom>();
 
-  public constructor(hub: FamilyHub, registry: MemberRegistry) {
+  public constructor(hub: FamilyHub, registry: MemberRegistry, storageDir?: string) {
     this.hub = hub;
     this.registry = registry;
+    this.storageDir = storageDir;
+    this.restoreRoomsFromDisk();
   }
 
   public getOrCreateMainRoom(scopeId: string): FamilyGroupRoom {
@@ -87,13 +98,44 @@ export class GroupChatEngine {
       messages: [],
       readCursors: {},
       activeSpeakerId: null,
+      streamingDraft: null,
       running: false,
       relayAbort: null,
     };
     this.rooms.set(this.roomKey(input.scopeId, id), room);
+    this.persistRoomsToDisk();
     const snapshot = this.toImmutable(room);
     this.hub.emit({ type: 'group_updated', room: snapshot });
     return snapshot;
+  }
+
+  public clearRoomMessages(scopeId: string, groupId: string): FamilyGroupRoom {
+    const room =
+      groupId === MAIN_GROUP_ID
+        ? this.ensureMainRoom(scopeId)
+        : (this.rooms.get(this.roomKey(scopeId, groupId)) ?? this.ensureMainRoom(scopeId));
+    room.relayAbort?.abort();
+    room.relayAbort = null;
+    room.messages = [];
+    room.readCursors = {};
+    room.activeSpeakerId = null;
+    room.streamingDraft = null;
+    room.lastPassMemberName = undefined;
+    room.running = false;
+    this.persistRoomsToDisk();
+    this.broadcast(room);
+    return this.toImmutable(room);
+  }
+
+  public deleteRoom(scopeId: string, groupId: string): boolean {
+    if (groupId === MAIN_GROUP_ID) return false;
+    const key = this.roomKey(scopeId, groupId);
+    const existing = this.rooms.get(key);
+    if (!existing) return false;
+    existing.relayAbort?.abort();
+    this.rooms.delete(key);
+    this.persistRoomsToDisk();
+    return true;
   }
 
   public interruptRoom(scopeId: string, groupId: string): boolean {
@@ -120,7 +162,6 @@ export class GroupChatEngine {
         : (this.rooms.get(this.roomKey(input.scopeId, input.groupId)) ??
           this.ensureMainRoom(input.scopeId));
 
-    // 若群内上一轮接龙仍在跑，人类或新消息插话先中止上一轮未完接龙
     if (room.relayAbort) {
       room.relayAbort.abort();
       room.relayAbort = null;
@@ -136,24 +177,24 @@ export class GroupChatEngine {
       groupId: room.id,
       senderId: input.senderId,
       senderName: input.senderName,
-      senderAvatar: input.senderAvatar ?? '🧑‍💻',
+      senderAvatar: input.senderAvatar ?? 'human',
       content: input.content.trim(),
       mentions,
       createdAt: new Date().toISOString(),
     };
     room.messages.push(triggerMsg);
-    // 发言者本人自然已读截至自己发出的这条消息
     if (memberIdSet.has(input.senderId)) {
       room.readCursors[input.senderId] = room.messages.length;
     }
     room.lastPassMemberName = undefined;
+    room.streamingDraft = null;
+    this.persistRoomsToDisk();
 
     const relayController = new AbortController();
     room.relayAbort = relayController;
     room.running = true;
     this.broadcast(room);
 
-    // 初始化发言话筒队列：有点名则仅唤醒被点名成员；无点名则群内其他在岗成员依次看群
     const speakerQueue: string[] = [];
     const enqueueSpeaker = (memberId: string) => {
       if (!memberIdSet.has(memberId)) return;
@@ -198,9 +239,15 @@ export class GroupChatEngine {
 
         totalChecks += 1;
         room.activeSpeakerId = speaker.id;
+        room.streamingDraft = {
+          senderId: speaker.id,
+          senderName: speaker.name,
+          senderAvatar: speaker.avatar,
+          content: '',
+          statusSummary: '思考中…',
+        };
         this.broadcast(room);
 
-        // 标记该成员已读到当前群消息末尾
         room.readCursors[speaker.id] = room.messages.length;
         const allowPass = substantiveTurns > 0 || speakerQueue.length > 0;
         const promptForSpeaker = this.formatUnreadGroupDelta(
@@ -217,24 +264,53 @@ export class GroupChatEngine {
             scopeId: input.scopeId,
             memberId: speaker.id,
             senderRole: 'peer',
-            senderName: `👥 ${room.title}`,
+            senderName: room.title,
             message: promptForSpeaker,
             cwd: input.cwd,
             callChain: input.parentCallChain ?? [],
             activeGroupHold: room.id,
-            recordInFeed: true,
+            recordInFeed: false,
+            onDelta: (accumulated) => {
+              if (relayController.signal.aborted) return;
+              // 若正在输出 [PASS] 前缀则暂不闪现废话草稿
+              if (/^\[?\s*P(?:A(?:S(?:S)?)?)?\s*\]?$/iu.test(accumulated.trim())) {
+                return;
+              }
+              room.streamingDraft = {
+                senderId: speaker.id,
+                senderName: speaker.name,
+                senderAvatar: speaker.avatar,
+                content: accumulated,
+                statusSummary: room.streamingDraft?.statusSummary,
+              };
+              this.broadcast(room);
+            },
+            onStatus: (summary) => {
+              if (relayController.signal.aborted) return;
+              room.streamingDraft = {
+                senderId: speaker.id,
+                senderName: speaker.name,
+                senderAvatar: speaker.avatar,
+                content: room.streamingDraft?.content ?? '',
+                statusSummary: summary,
+              };
+              this.broadcast(room);
+            },
             signal: relayController.signal,
           });
           replyText = outcome.finalText.trim();
         } catch {
+          room.streamingDraft = null;
           if (relayController.signal.aborted) break;
           continue;
         }
 
+        room.streamingDraft = null;
         if (relayController.signal.aborted) break;
 
         if (isPassReply(replyText)) {
           room.lastPassMemberName = speaker.name;
+          this.persistRoomsToDisk();
           this.broadcast(room);
           continue;
         }
@@ -254,11 +330,10 @@ export class GroupChatEngine {
           createdAt: new Date().toISOString(),
         };
         room.messages.push(speakerMsg);
-        // 成员自己刚刚发出的群消息标记为本人已读
         room.readCursors[speaker.id] = room.messages.length;
+        this.persistRoomsToDisk();
         this.broadcast(room);
 
-        // 将其 @ 点名的其他群成员加入话筒接龙队列
         for (const mentionedId of replyMentions) {
           enqueueSpeaker(mentionedId);
         }
@@ -267,6 +342,7 @@ export class GroupChatEngine {
       if (room.relayAbort === relayController) {
         room.relayAbort = null;
         room.activeSpeakerId = null;
+        room.streamingDraft = null;
         room.running = false;
         this.broadcast(room);
       }
@@ -281,12 +357,13 @@ export class GroupChatEngine {
     if (existing) return existing;
     const created: MutableGroupRoom = {
       id: MAIN_GROUP_ID,
-      title: '🏠 家庭总群',
+      title: '家庭总群',
       scopeId,
       memberIds: 'all_enabled',
       messages: [],
       readCursors: {},
       activeSpeakerId: null,
+      streamingDraft: null,
       running: false,
       relayAbort: null,
     };
@@ -353,6 +430,7 @@ export class GroupChatEngine {
       messages: [...room.messages],
       readCursors: { ...room.readCursors },
       activeSpeakerId: room.activeSpeakerId,
+      streamingDraft: room.streamingDraft ? { ...room.streamingDraft } : null,
       lastPassMemberName: room.lastPassMemberName,
       running: room.running,
     };
@@ -360,5 +438,77 @@ export class GroupChatEngine {
 
   private roomKey(scopeId: string, groupId: string): string {
     return `${scopeId}::${groupId}`;
+  }
+
+  private persistRoomsToDisk(): void {
+    if (!this.storageDir) return;
+    try {
+      mkdirSync(this.storageDir, { recursive: true });
+      const filePath = join(this.storageDir, 'group-rooms.json');
+      const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+      const roomsData = Array.from(this.rooms.values()).map((r) => ({
+        id: r.id,
+        title: r.title,
+        scopeId: r.scopeId,
+        memberIds: r.memberIds,
+        messages: r.messages.slice(-120),
+        readCursors: r.readCursors,
+      }));
+      writeFileSync(tmpPath, `${JSON.stringify({ version: 1, rooms: roomsData }, null, 2)}\n`, 'utf8');
+      renameSync(tmpPath, filePath);
+    } catch {
+      // ignore UI transcript persistence errors
+    }
+  }
+
+  private restoreRoomsFromDisk(): void {
+    if (!this.storageDir) return;
+    const filePath = join(this.storageDir, 'group-rooms.json');
+    if (!existsSync(filePath)) return;
+    try {
+      const raw = JSON.parse(readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+      const roomsList = Array.isArray(raw.rooms) ? raw.rooms : [];
+      for (const item of roomsList) {
+        if (!item || typeof item !== 'object') continue;
+        const r = item as Record<string, unknown>;
+        if (typeof r.id !== 'string' || typeof r.scopeId !== 'string' || typeof r.title !== 'string') {
+          continue;
+        }
+        const memberIds: 'all_enabled' | readonly string[] =
+          r.memberIds === 'all_enabled'
+            ? 'all_enabled'
+            : Array.isArray(r.memberIds)
+              ? r.memberIds.filter((x): x is string => typeof x === 'string')
+              : 'all_enabled';
+        const messages = Array.isArray(r.messages)
+          ? r.messages.filter(
+              (m): m is GroupMessage =>
+                Boolean(m && typeof m === 'object' && typeof (m as Record<string, unknown>).id === 'string')
+            )
+          : [];
+        const rawCursors =
+          r.readCursors && typeof r.readCursors === 'object' && !Array.isArray(r.readCursors)
+            ? (r.readCursors as Record<string, unknown>)
+            : {};
+        const readCursors: Record<string, number> = {};
+        for (const [k, v] of Object.entries(rawCursors)) {
+          if (typeof v === 'number') readCursors[k] = v;
+        }
+        this.rooms.set(this.roomKey(r.scopeId, r.id), {
+          id: r.id,
+          title: r.title,
+          scopeId: r.scopeId,
+          memberIds,
+          messages,
+          readCursors,
+          activeSpeakerId: null,
+          streamingDraft: null,
+          running: false,
+          relayAbort: null,
+        });
+      }
+    } catch {
+      // ignore
+    }
   }
 }

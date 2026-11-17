@@ -1,15 +1,35 @@
+import {
+  ArrowDown,
+  ArrowLeft,
+  Check,
+  Copy,
+  CornerUpRight,
+  Eraser,
+  Hash,
+  PanelRight,
+  Pencil,
+  PhoneCall,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Sparkles,
+  Square,
+  Trash2,
+  UserPlus,
+  Users,
+} from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import { defaultLobeAvatarForBody } from '../core/avatar-spec.ts';
-import { BODY_KINDS, type BodyKind, type FamilyMember, type StarterMemberTemplate } from '../core/types.ts';
+import type { FamilyMember } from '../core/types.ts';
 import { ApprovalBanner } from './ApprovalBanner.tsx';
 import { familyClientApi, useFamilyLiveState } from './api.ts';
-import {
-  isPhotoAvatarUrl,
-  LOBE_VENDOR_ICONS,
-  MemberAvatar,
-  prepareUploadedPhotoDataUrl,
-} from './MemberAvatar.tsx';
+import { CommandPalette } from './CommandPalette.tsx';
+import { MemberAvatar } from './MemberAvatar.tsx';
+import { MemberSheet } from './MemberSheet.tsx';
+import { RichMessageContent } from './RichMessageContent.tsx';
+import { SmartComposer } from './SmartComposer.tsx';
 
 export interface SessionSummaryOption {
   readonly id: string;
@@ -22,40 +42,106 @@ export interface FamilyWorkbenchProps {
   readonly onBackToConversation: () => void;
 }
 
-type WorkbenchTab = 'lounge' | 'studio';
 type LoungeTarget =
   | { readonly kind: 'group'; readonly groupId: string }
   | { readonly kind: 'member'; readonly memberId: string };
 
+type InspectorTab = 'calls' | 'context';
+
 const STATE_LABELS: Readonly<Record<string, string>> = {
-  sleeping: '休眠待唤醒',
-  idle: '空闲待命',
-  working: '独立推进中',
-  in_call: '通话协商中',
-  awaiting_approval: '举手待批示',
-  error: '连接异常',
+  sleeping: '待唤醒',
+  idle: '空闲',
+  working: '执行中',
+  in_call: '通话中',
+  awaiting_approval: '待批示',
+  error: '异常',
 };
 
-function GroupRoomIcon(): React.ReactElement {
+function CopyMessageButton({ text }: { readonly text: string }): React.ReactElement {
+  const [copied, setCopied] = useState<boolean>(false);
   return (
-    <span className="dshfam-avatar" style={{ width: 30, height: 30 }}>
-      <svg width={17} height={17} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <circle cx="9" cy="8" r="3" stroke="currentColor" strokeWidth="1.8" />
-        <circle cx="16.5" cy="9.5" r="2.5" stroke="currentColor" strokeWidth="1.7" />
-        <path
-          d="M3.5 19c0-2.7 2.4-4.8 5.5-4.8s5.5 2.1 5.5 4.8"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-        />
-        <path
-          d="M15 18.8c.4-1.9 1.9-3.3 3.8-3.3 1 0 1.8.4 2.4 1"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinecap="round"
-        />
-      </svg>
-    </span>
+    <button
+      type="button"
+      className="sh-btn sh-btn-ghost sh-btn-icon"
+      style={{ width: 24, height: 24 }}
+      title="复制内容"
+      onClick={() => {
+        void navigator.clipboard?.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        });
+      }}
+    >
+      {copied ? <Check size={12} /> : <Copy size={12} />}
+    </button>
+  );
+}
+
+function HandoffPopoverButton({
+  sourceAuthor,
+  content,
+  candidates,
+  onHandoff,
+}: {
+  readonly sourceAuthor: string;
+  readonly content: string;
+  readonly candidates: readonly FamilyMember[];
+  readonly onHandoff: (targetMemberId: string, framedPrompt: string) => void;
+}): React.ReactElement | null {
+  const [open, setOpen] = useState<boolean>(false);
+  if (candidates.length === 0) return null;
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        type="button"
+        className="sh-btn sh-btn-ghost sh-btn-icon"
+        style={{ width: 24, height: 24 }}
+        title="转交其他家庭成员评审或接力"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <CornerUpRight size={12} />
+      </button>
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            right: 0,
+            top: 'calc(100% + 4px)',
+            width: 190,
+            padding: 4,
+            borderRadius: 8,
+            border: '1px solid var(--sh-border)',
+            background: 'var(--sh-popover)',
+            boxShadow: 'var(--sh-shadow-lg)',
+            zIndex: 35,
+          }}
+        >
+          <div style={{ padding: '4px 8px', fontSize: 10.5, color: 'var(--sh-muted-fg)', fontWeight: 600 }}>
+            转交给谁评审 / 接力？
+          </div>
+          {candidates.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              className="sh-menu-item"
+              style={{ padding: '5px 8px', fontSize: 12 }}
+              onClick={() => {
+                setOpen(false);
+                const snippet = content.length > 1200 ? `${content.slice(0, 1200)}…` : content;
+                onHandoff(
+                  m.id,
+                  `以下是「${sourceAuthor}」刚才产出的结论/方案，请站在你的专业角度进行评审、补充或直接接力落地：\n\n---\n${snippet}\n---`
+                );
+              }}
+            >
+              <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} alt={m.name} size={18} />
+              <span>{m.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -66,39 +152,48 @@ export function FamilyWorkbench({
   const [selectedScopeId, setSelectedScopeId] = useState<string>(() => sessions[0]?.id ?? 'default');
   const { state, refresh } = useFamilyLiveState(selectedScopeId);
 
-  const [activeTab, setActiveTab] = useState<WorkbenchTab>('lounge');
   const [target, setTarget] = useState<LoungeTarget>({ kind: 'group', groupId: 'family-main' });
-  const [composerText, setComposerText] = useState<string>('');
   const [sendFresh, setSendFresh] = useState<boolean>(false);
-  const [sending, setSending] = useState<boolean>(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [inspectorOpen, setInspectorOpen] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 1120 : true
+  );
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('calls');
 
-  // 新建专题群状态
+  // Slide-over Sheet 与 Cmd+K 指挥面板状态
+  const [sheetOpen, setSheetOpen] = useState<boolean>(false);
+  const [editingMember, setEditingMember] = useState<FamilyMember | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState<boolean>(false);
+
+  // 新建专题群浮层状态
   const [creatingGroup, setCreatingGroup] = useState<boolean>(false);
   const [newGroupTitle, setNewGroupTitle] = useState<string>('');
   const [newGroupMembers, setNewGroupMembers] = useState<string[]>([]);
-
-  // 成员与灵魂工坊编辑状态
-  const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
-  const [formOpen, setFormOpen] = useState<boolean>(false);
-  const [formId, setFormId] = useState<string>('');
-  const [formName, setFormName] = useState<string>('');
-  const [formAvatar, setFormAvatar] = useState<string>('lobe:claudecode');
-  const [avatarManuallyChosen, setAvatarManuallyChosen] = useState<boolean>(false);
-  const [uploadingPhoto, setUploadingPhoto] = useState<boolean>(false);
-  const [formSpecialty, setFormSpecialty] = useState<string>('');
-  const [formBodyKind, setFormBodyKind] = useState<BodyKind>('claude');
-  const [formCommand, setFormCommand] = useState<string>('');
-  const [formExtraArgs, setFormExtraArgs] = useState<string>('');
-  const [formSoulPrompt, setFormSoulPrompt] = useState<string>('');
   const [probing, setProbing] = useState<boolean>(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [composerInsert, setComposerInsert] = useState<{ seq: number; text: string } | null>(null);
+
+  // 智能贴底滚动状态
+  const streamRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef<boolean>(true);
+  const [showJumpBottom, setShowJumpBottom] = useState<boolean>(false);
 
   useEffect(() => {
     if (selectedScopeId === 'default' && sessions.length > 0 && sessions[0]?.id) {
       setSelectedScopeId(sessions[0].id);
     }
   }, [sessions, selectedScopeId]);
+
+  // 全局 Cmd/Ctrl + K 快捷键唤起指挥面板
+  useEffect(() => {
+    const onGlobalKey = (ev: KeyboardEvent) => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') {
+        ev.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onGlobalKey);
+    return () => window.removeEventListener('keydown', onGlobalKey);
+  }, []);
 
   const currentSessionMeta = useMemo(
     () => sessions.find((s) => s.id === selectedScopeId),
@@ -107,6 +202,11 @@ export function FamilyWorkbench({
 
   const enabledMembers = useMemo(
     () => state.members.filter((m) => m.enabled),
+    [state.members]
+  );
+
+  const validMemberIdSet = useMemo(
+    () => new Set(state.members.map((m) => m.id)),
     [state.members]
   );
 
@@ -120,21 +220,28 @@ export function FamilyWorkbench({
     return map;
   }, [state.snapshots, selectedScopeId]);
 
-  const activeGroupRoom = useMemo(() => {
-    if (target.kind !== 'group') return undefined;
-    return (
-      state.rooms.find((r) => r.scopeId === selectedScopeId && r.id === target.groupId) ?? {
+  const scopedRooms = useMemo(() => {
+    const found = state.rooms.filter((r) => r.scopeId === selectedScopeId);
+    if (found.length > 0) return found;
+    return [
+      {
         id: 'family-main',
-        title: '🏠 家庭总群',
+        title: '家庭总群',
         scopeId: selectedScopeId,
         memberIds: 'all_enabled' as const,
         messages: [],
         readCursors: {},
         activeSpeakerId: null,
+        streamingDraft: null,
         running: false,
-      }
-    );
-  }, [state.rooms, selectedScopeId, target]);
+      },
+    ];
+  }, [state.rooms, selectedScopeId]);
+
+  const activeGroupRoom = useMemo(() => {
+    if (target.kind !== 'group') return undefined;
+    return scopedRooms.find((r) => r.id === target.groupId) ?? scopedRooms[0];
+  }, [scopedRooms, target]);
 
   const activeMember = useMemo(() => {
     if (target.kind !== 'member') return undefined;
@@ -146,103 +253,108 @@ export function FamilyWorkbench({
     return snapshotByMember.get(activeMember.id);
   }, [activeMember, snapshotByMember]);
 
-  const firstAvailableBody = useMemo<BodyKind>(() => {
-    const ready = state.bodies.find((b) => b.available);
-    return ready?.kind ?? 'claude';
-  }, [state.bodies]);
+  // 监听消息变化自动平滑贴底（仅当用户未手动上翻历史时）
+  const streamSignature =
+    target.kind === 'group'
+      ? `${activeGroupRoom?.messages.length ?? 0}:${activeGroupRoom?.streamingDraft?.content.length ?? 0}`
+      : `${activeMemberSnapshot?.entries.length ?? 0}:${activeMemberSnapshot?.entries.at(-1)?.content.length ?? 0}`;
 
-  const openCreateForm = (tpl?: StarterMemberTemplate) => {
-    const initialBody = tpl?.recommendedBody ?? firstAvailableBody;
-    setEditingMemberId(null);
-    setFormId(tpl?.id ?? '');
-    setFormName(tpl?.name ?? '');
-    setFormAvatar(tpl?.avatar ?? defaultLobeAvatarForBody(initialBody));
-    setAvatarManuallyChosen(Boolean(tpl?.avatar));
-    setFormSpecialty(tpl?.specialty ?? '');
-    setFormBodyKind(initialBody);
-    setFormCommand('');
-    setFormExtraArgs('');
-    setFormSoulPrompt(tpl?.soulPrompt ?? '');
-    setFormOpen(true);
-    setActiveTab('studio');
-  };
-
-  const openEditForm = (member: FamilyMember) => {
-    setEditingMemberId(member.id);
-    setFormId(member.id);
-    setFormName(member.name);
-    setFormAvatar(member.avatar);
-    setAvatarManuallyChosen(true);
-    setFormSpecialty(member.specialty);
-    setFormBodyKind(member.body.kind);
-    setFormCommand(member.body.command ?? '');
-    setFormExtraArgs((member.body.extraArgs ?? []).join(' '));
-    setFormSoulPrompt(member.soulPrompt);
-    setFormOpen(true);
-    setActiveTab('studio');
-  };
-
-  const handleBodyKindChange = (nextKind: BodyKind) => {
-    setFormBodyKind(nextKind);
-    if (!avatarManuallyChosen) {
-      setFormAvatar(defaultLobeAvatarForBody(nextKind));
+  useEffect(() => {
+    const el = streamRef.current;
+    if (!el) return;
+    if (stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    } else {
+      setShowJumpBottom(true);
     }
+  }, [streamSignature, target]);
+
+  const scrollToBottom = () => {
+    const el = streamRef.current;
+    if (!el) return;
+    stickToBottomRef.current = true;
+    setShowJumpBottom(false);
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   };
 
-  const handlePhotoFileChange = async (ev: React.ChangeEvent<HTMLInputElement>) => {
-    const file = ev.target.files?.[0];
-    ev.target.value = '';
-    if (!file) return;
-    setErrorBanner(null);
-    setUploadingPhoto(true);
-    try {
-      const preparedDataUrl = await prepareUploadedPhotoDataUrl(file);
-      const uploaded = await familyClientApi.uploadAvatar(preparedDataUrl);
-      setFormAvatar(uploaded.url);
-      setAvatarManuallyChosen(true);
-    } catch (err) {
-      setErrorBanner(err instanceof Error ? err.message : String(err));
-    } finally {
-      setUploadingPhoto(false);
-    }
+  const openCreateSheet = () => {
+    setEditingMember(null);
+    setSheetOpen(true);
   };
 
-  const handleSaveMember = async (ev: React.FormEvent) => {
-    ev.preventDefault();
-    setErrorBanner(null);
-    const parsedArgs = formExtraArgs
-      .split(/\s+/u)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const bodySpec = {
-      kind: formBodyKind,
-      ...(formCommand.trim() ? { command: formCommand.trim() } : {}),
-      ...(parsedArgs.length > 0 ? { extraArgs: parsedArgs } : {}),
-    };
+  const openEditSheet = (member: FamilyMember) => {
+    setEditingMember(member);
+    setSheetOpen(true);
+  };
 
-    try {
-      if (editingMemberId) {
-        await familyClientApi.updateMember(editingMemberId, {
-          name: formName,
-          avatar: formAvatar,
-          specialty: formSpecialty,
-          body: bodySpec,
-          soulPrompt: formSoulPrompt,
+  const dispatchMessageNonBlocking = (messageText: string, overrideTarget?: LoungeTarget) => {
+    const effectiveTarget = overrideTarget ?? target;
+    setErrorBanner(null);
+    stickToBottomRef.current = true;
+    setShowJumpBottom(false);
+
+    if (effectiveTarget.kind === 'group') {
+      void familyClientApi
+        .postGroupMessage({
+          scopeId: selectedScopeId,
+          groupId: effectiveTarget.groupId,
+          content: messageText,
+          cwd: currentSessionMeta?.cwd,
+        })
+        .catch((err: unknown) => {
+          setErrorBanner(err instanceof Error ? err.message : String(err));
         });
-      } else {
-        await familyClientApi.createMember({
-          id: formId,
-          name: formName,
-          avatar: formAvatar,
-          specialty: formSpecialty,
-          body: bodySpec,
-          soulPrompt: formSoulPrompt,
+      return;
+    }
+
+    const useFresh = sendFresh;
+    setSendFresh(false);
+    void familyClientApi
+      .sendDirectChat({
+        scopeId: selectedScopeId,
+        memberId: effectiveTarget.memberId,
+        message: messageText,
+        cwd: currentSessionMeta?.cwd,
+        fresh: useFresh,
+      })
+      .catch((err: unknown) => {
+        setErrorBanner(err instanceof Error ? err.message : String(err));
+      });
+  };
+
+  const handleHandoffToMember = (targetMemberId: string, framedPrompt: string) => {
+    const nextTarget: LoungeTarget = { kind: 'member', memberId: targetMemberId };
+    setTarget(nextTarget);
+    dispatchMessageNonBlocking(framedPrompt, nextTarget);
+  };
+
+  const handleClearCurrentHistory = async () => {
+    setErrorBanner(null);
+    try {
+      if (target.kind === 'group' && activeGroupRoom) {
+        await familyClientApi.clearHistory({
+          scopeId: selectedScopeId,
+          groupId: activeGroupRoom.id,
+        });
+      } else if (target.kind === 'member' && activeMember) {
+        await familyClientApi.clearHistory({
+          scopeId: selectedScopeId,
+          memberId: activeMember.id,
         });
       }
-      setFormOpen(false);
       await refresh();
     } catch (err) {
       setErrorBanner(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleReprobeBodies = async () => {
+    setProbing(true);
+    try {
+      await familyClientApi.probeBodies();
+      await refresh();
+    } finally {
+      setProbing(false);
     }
   };
 
@@ -253,47 +365,6 @@ export function FamilyWorkbench({
       await refresh();
     } catch (err) {
       setErrorBanner(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const handleReprobe = async () => {
-    setProbing(true);
-    try {
-      await familyClientApi.probeBodies();
-      await refresh();
-    } finally {
-      setProbing(false);
-    }
-  };
-
-  const handleSendInLounge = async () => {
-    const text = composerText.trim();
-    if (!text || sending) return;
-    setErrorBanner(null);
-    setComposerText('');
-    setSending(true);
-    try {
-      if (target.kind === 'group') {
-        await familyClientApi.postGroupMessage({
-          scopeId: selectedScopeId,
-          groupId: target.groupId,
-          content: text,
-          cwd: currentSessionMeta?.cwd,
-        });
-      } else {
-        await familyClientApi.sendDirectChat({
-          scopeId: selectedScopeId,
-          memberId: target.memberId,
-          message: text,
-          cwd: currentSessionMeta?.cwd,
-          fresh: sendFresh,
-        });
-        setSendFresh(false);
-      }
-    } catch (err) {
-      setErrorBanner(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSending(false);
     }
   };
 
@@ -316,71 +387,96 @@ export function FamilyWorkbench({
     }
   };
 
-  const workingCount = state.snapshots.filter(
-    (s) =>
-      s.scopeId === selectedScopeId &&
-      (s.state === 'working' || s.state === 'in_call' || s.state === 'awaiting_approval')
-  ).length;
+  const isCurrentStageBusy =
+    target.kind === 'group'
+      ? Boolean(activeGroupRoom?.running)
+      : activeMemberSnapshot?.state === 'working' ||
+        activeMemberSnapshot?.state === 'in_call' ||
+        activeMemberSnapshot?.state === 'awaiting_approval';
+
+  const groupParticipantMembers = useMemo(() => {
+    if (!activeGroupRoom) return enabledMembers;
+    if (activeGroupRoom.memberIds === 'all_enabled') return enabledMembers;
+    const set = new Set(activeGroupRoom.memberIds);
+    return enabledMembers.filter((m) => set.has(m.id));
+  }, [activeGroupRoom, enabledMembers]);
 
   return (
     <div className="dshfam-root">
-      {/* 顶部栏 */}
-      <div className="dshfam-topbar">
-        <div className="dshfam-brand">
-          <MemberAvatar avatar="lobe:deepseek" size={32} className="dshfam-brand-badge" />
-          <div style={{ minWidth: 0 }}>
-            <div className="dshfam-brand-title">智能体家庭 · Agents Family</div>
-            <div className="dshfam-brand-sub">
-              CLI 是身体，提示词是灵魂，随身手机与家庭群聊让成员像真人一样独立或协作完活
-            </div>
+      {/* 顶栏 Toolbar (shadcn minimal header) */}
+      <header className="dshfam-header">
+        <div className="dshfam-header-left">
+          <MemberAvatar avatar="lobe:deepseek" size={28} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <span style={{ fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap' }}>智能体家庭</span>
+            <span style={{ color: 'var(--sh-muted-fg)' }}>/</span>
+            {sessions.length > 0 ? (
+              <select
+                aria-label="关联工作区会话"
+                className="sh-select"
+                style={{ height: 28, width: 196, fontSize: 12 }}
+                value={selectedScopeId}
+                onChange={(e) => setSelectedScopeId(e.target.value)}
+              >
+                {sessions.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.title}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span style={{ fontSize: 12, color: 'var(--sh-muted-fg)' }}>默认工作区</span>
+            )}
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          {sessions.length > 0 && (
-            <select
-              aria-label="关联工作区会话"
-              className="dshfam-select"
-              style={{ width: 210 }}
-              value={selectedScopeId}
-              onChange={(e) => setSelectedScopeId(e.target.value)}
-            >
-              {sessions.map((s) => (
-                <option key={s.id} value={s.id}>
-                  工作区：{s.title}
-                </option>
-              ))}
-            </select>
-          )}
+        <div className="dshfam-header-right">
+          <button
+            type="button"
+            className="sh-btn sh-btn-outline"
+            style={{ height: 30, padding: '0 10px', color: 'var(--sh-muted-fg)', gap: 10 }}
+            onClick={() => setPaletteOpen(true)}
+          >
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+              <Search size={13} />
+              <span>跳转或执行命令…</span>
+            </span>
+            <span className="sh-kbd">⌘K</span>
+          </button>
 
-          <div className="dshfam-tabs" role="tablist">
-            <button
-              type="button"
-              role="tab"
-              className="dshfam-tab"
-              data-active={String(activeTab === 'lounge')}
-              onClick={() => setActiveTab('lounge')}
-            >
-              家庭客厅 {workingCount > 0 ? `(${workingCount} 忙碌)` : ''}
-            </button>
-            <button
-              type="button"
-              role="tab"
-              className="dshfam-tab"
-              data-active={String(activeTab === 'studio')}
-              onClick={() => setActiveTab('studio')}
-            >
-              成员与灵魂工坊 ({state.members.length})
-            </button>
-          </div>
+          <button
+            type="button"
+            className="sh-btn sh-btn-primary"
+            style={{ height: 30 }}
+            onClick={openCreateSheet}
+          >
+            <UserPlus size={14} />
+            <span>新成员</span>
+          </button>
 
-          <button type="button" className="dshfam-btn" onClick={onBackToConversation}>
-            返回主对话
+          <button
+            type="button"
+            className={`sh-btn sh-btn-icon ${inspectorOpen ? 'sh-btn-secondary' : 'sh-btn-ghost'}`}
+            title="展开/收起右侧协作检查器"
+            aria-label="切换右侧栏"
+            onClick={() => setInspectorOpen((v) => !v)}
+          >
+            <PanelRight size={15} />
+          </button>
+
+          <button
+            type="button"
+            className="sh-btn sh-btn-ghost"
+            style={{ height: 30 }}
+            onClick={onBackToConversation}
+          >
+            <ArrowLeft size={14} />
+            <span>返回对话</span>
           </button>
         </div>
-      </div>
+      </header>
 
-      {/* 全局举手待批示通知条 */}
+      {/* 原生权限举手待批示横幅 */}
       <ApprovalBanner approvals={state.pendingApprovals} />
 
       {errorBanner && (
@@ -389,70 +485,77 @@ export function FamilyWorkbench({
             margin: '8px 16px 0',
             padding: '8px 12px',
             borderRadius: 8,
-            background: 'rgba(239, 68, 68, 0.14)',
-            border: '1px solid rgba(239, 68, 68, 0.38)',
-            color: '#ef4444',
+            background: 'var(--sh-destructive-soft)',
+            color: 'var(--sh-destructive)',
             fontSize: 12.5,
             display: 'flex',
+            alignItems: 'center',
             justifyContent: 'space-between',
           }}
         >
           <span>{errorBanner}</span>
           <button
             type="button"
+            className="sh-btn sh-btn-ghost sh-btn-icon"
+            style={{ width: 22, height: 22 }}
             onClick={() => setErrorBanner(null)}
-            style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer' }}
           >
             ✕
           </button>
         </div>
       )}
 
-      {activeTab === 'lounge' ? (
-        <div className="dshfam-lounge">
-          {/* 左栏：群聊空间 + 家庭成员名册 */}
-          <aside className="dshfam-nav-rail">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <div className="dshfam-section-head">
+      {/* 三栏主工作区 */}
+      <div className="dshfam-workspace">
+        {/* 左栏：群聊频道 + 家庭成员 + CLI 身体底座 */}
+        <aside className="dshfam-sidebar">
+          <div className="dshfam-sidebar-scroll">
+            {/* 群聊分组 */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div className="sh-section-label">
                 <span>群聊空间</span>
                 <button
                   type="button"
-                  className="dshfam-chip"
+                  className="sh-btn sh-btn-ghost sh-btn-icon"
+                  style={{ width: 22, height: 22 }}
+                  title="新建专题讨论群"
                   onClick={() => setCreatingGroup((v) => !v)}
                 >
-                  + 拉群
+                  <Plus size={13} />
                 </button>
               </div>
 
               {creatingGroup && (
                 <div
                   style={{
+                    margin: '4px 4px 6px',
                     padding: 10,
-                    borderRadius: 9,
-                    border: '1px solid var(--fam-border-strong)',
-                    background: 'var(--fam-surface)',
+                    borderRadius: 8,
+                    border: '1px solid var(--sh-border)',
+                    background: 'var(--sh-card)',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: 7,
+                    gap: 8,
                   }}
                 >
                   <input
-                    className="dshfam-input"
-                    placeholder="群名称（如：登录改版专项群）"
+                    className="sh-input"
+                    style={{ height: 30, fontSize: 12 }}
+                    placeholder="群聊名称（如：接口联调群）"
                     value={newGroupTitle}
                     onChange={(e) => setNewGroupTitle(e.target.value)}
                   />
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                     {enabledMembers.map((m) => {
-                      const checked = newGroupMembers.includes(m.id);
+                      const selected = newGroupMembers.includes(m.id);
                       return (
                         <button
                           key={m.id}
                           type="button"
                           className="dshfam-chip"
                           style={
-                            checked
-                              ? { borderColor: 'var(--fam-accent)', color: 'var(--fam-accent)' }
+                            selected
+                              ? { borderColor: 'var(--sh-fg)', background: 'var(--sh-accent)' }
                               : undefined
                           }
                           onClick={() =>
@@ -461,163 +564,290 @@ export function FamilyWorkbench({
                             )
                           }
                         >
-                          <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} alt={m.name} size={16} />
+                          <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} size={14} />
                           <span>{m.name}</span>
                         </button>
                       );
                     })}
                   </div>
-                  <button
-                    type="button"
-                    className="dshfam-btn dshfam-btn-primary"
-                    onClick={() => void handleCreateTopicGroup()}
-                  >
-                    创建群聊
-                  </button>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                    <button
+                      type="button"
+                      className="sh-btn sh-btn-ghost sh-btn-sm"
+                      onClick={() => setCreatingGroup(false)}
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      className="sh-btn sh-btn-primary sh-btn-sm"
+                      disabled={!newGroupTitle.trim()}
+                      onClick={() => void handleCreateTopicGroup()}
+                    >
+                      创建
+                    </button>
+                  </div>
                 </div>
               )}
 
-              {(state.rooms.filter((r) => r.scopeId === selectedScopeId).length > 0
-                ? state.rooms.filter((r) => r.scopeId === selectedScopeId)
-                : [
-                    {
-                      id: 'family-main',
-                      title: '家庭总群',
-                      scopeId: selectedScopeId,
-                      memberIds: 'all_enabled' as const,
-                      messages: [],
-                      readCursors: {},
-                      activeSpeakerId: null,
-                      running: false,
-                    },
-                  ]
-              ).map((room) => (
-                <button
-                  key={room.id}
-                  type="button"
-                  className="dshfam-nav-item"
-                  data-selected={String(target.kind === 'group' && target.groupId === room.id)}
-                  onClick={() => setTarget({ kind: 'group', groupId: room.id })}
-                >
-                  <GroupRoomIcon />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontSize: 13,
-                        fontWeight: 600,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {room.title.replace(/^🏠\s*/u, '')}
+              {scopedRooms.map((room) => {
+                const isSelected = target.kind === 'group' && target.groupId === room.id;
+                return (
+                  <div
+                    key={room.id}
+                    className="sh-nav-row"
+                    data-active={String(isSelected)}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setTarget({ kind: 'group', groupId: room.id })}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') setTarget({ kind: 'group', groupId: room.id });
+                    }}
+                  >
+                    <span className="dshfam-avatar" style={{ width: 26, height: 26 }}>
+                      {room.id === 'family-main' ? <Users size={13} /> : <Hash size={13} />}
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontSize: 12.5,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {room.title.replace(/^🏠\s*/u, '')}
+                      </div>
                     </div>
-                    <div style={{ fontSize: 11, opacity: 0.62 }}>
-                      {room.running ? '正在讨论中…' : `${room.messages.length} 条发言`}
-                    </div>
+                    {room.running ? (
+                      <span className="dshfam-dot" data-state="working" title="讨论中" />
+                    ) : room.id !== 'family-main' ? (
+                      <button
+                        type="button"
+                        className="sh-btn sh-btn-ghost sh-btn-icon sh-row-action"
+                        style={{ width: 20, height: 20 }}
+                        title="移除专题群"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void familyClientApi.deleteGroup(selectedScopeId, room.id).then(() => {
+                            if (isSelected) setTarget({ kind: 'group', groupId: 'family-main' });
+                            return refresh();
+                          });
+                        }}
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    ) : (
+                      <span style={{ fontSize: 11, color: 'var(--sh-muted-fg)' }}>
+                        {room.messages.length || ''}
+                      </span>
+                    )}
                   </div>
-                </button>
-              ))}
+                );
+              })}
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <div className="dshfam-section-head">
-                <span>家庭成员（一对一）</span>
-                <button type="button" className="dshfam-chip" onClick={() => openCreateForm()}>
-                  + 新成员
+            {/* 家庭成员分组 */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div className="sh-section-label">
+                <span>家庭成员 ({state.members.length})</span>
+                <button
+                  type="button"
+                  className="sh-btn sh-btn-ghost sh-btn-icon"
+                  style={{ width: 22, height: 22 }}
+                  title="创造新家庭成员"
+                  onClick={openCreateSheet}
+                >
+                  <Plus size={13} />
                 </button>
               </div>
 
-              {enabledMembers.length === 0 ? (
+              {state.members.length === 0 ? (
                 <div
                   style={{
+                    margin: '4px 4px 0',
                     padding: 12,
-                    borderRadius: 10,
-                    border: '1px dashed var(--fam-border-strong)',
-                    fontSize: 12,
+                    borderRadius: 9,
+                    border: '1px dashed var(--sh-border)',
                     display: 'flex',
                     flexDirection: 'column',
                     gap: 8,
+                    fontSize: 12,
+                    color: 'var(--sh-muted-fg)',
                   }}
                 >
-                  <div>家里还没有在岗成员。你可以白纸创建，或一键召入预设家庭成员：</div>
+                  <div>尚未登记成员，可一键导入预设家庭或自由创建：</div>
                   <button
                     type="button"
-                    className="dshfam-btn dshfam-btn-primary"
+                    className="sh-btn sh-btn-outline sh-btn-sm"
                     onClick={() => void handleSeedFamily()}
                   >
-                    一键召入预设四口之家
+                    <Sparkles size={12} />
+                    <span>导入预设四口之家</span>
                   </button>
                 </div>
               ) : (
-                enabledMembers.map((member) => {
+                state.members.map((member) => {
                   const snap = snapshotByMember.get(member.id);
-                  const st = snap?.state ?? 'sleeping';
+                  const st = !member.enabled ? 'sleeping' : (snap?.state ?? 'sleeping');
+                  const isSelected = target.kind === 'member' && target.memberId === member.id;
                   return (
-                    <button
+                    <div
                       key={member.id}
-                      type="button"
-                      className="dshfam-nav-item"
-                      data-selected={String(
-                        target.kind === 'member' && target.memberId === member.id
-                      )}
+                      className="sh-nav-row"
+                      data-active={String(isSelected)}
+                      style={!member.enabled ? { opacity: 0.52 } : undefined}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => setTarget({ kind: 'member', memberId: member.id })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') setTarget({ kind: 'member', memberId: member.id });
+                      }}
                     >
                       <MemberAvatar
                         avatar={member.avatar}
                         bodyKind={member.body.kind}
                         alt={member.name}
-                        size={30}
+                        size={28}
                       />
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                          <span style={{ fontSize: 13, fontWeight: 600 }}>{member.name}</span>
-                          <span className="dshfam-mono-tag">{member.body.kind}</span>
+                          <span
+                            style={{
+                              fontSize: 12.5,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {member.name}
+                          </span>
+                          <span className="sh-badge" style={{ height: 17, fontSize: 10 }}>
+                            {member.body.kind}
+                          </span>
                         </div>
                         <div
                           style={{
                             fontSize: 11,
-                            opacity: 0.65,
+                            color: 'var(--sh-muted-fg)',
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {snap?.statusText || STATE_LABELS[st] || member.specialty}
+                          {!member.enabled
+                            ? '休假停用中'
+                            : snap?.statusText || STATE_LABELS[st] || `@${member.id}`}
                         </div>
                       </div>
+
+                      <button
+                        type="button"
+                        className="sh-btn sh-btn-ghost sh-btn-icon sh-row-action"
+                        style={{ width: 22, height: 22 }}
+                        title="编辑成员灵魂与头像"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openEditSheet(member);
+                        }}
+                      >
+                        <Pencil size={11} />
+                      </button>
                       <span className="dshfam-dot" data-state={st} />
-                    </button>
+                    </div>
                   );
                 })
               )}
             </div>
-          </aside>
+          </div>
 
-          {/* 中栏：群聊室 或 成员一对一书房 */}
-          <section className="dshfam-stage">
-            {target.kind === 'group' && activeGroupRoom ? (
-              <>
-                <div className="dshfam-stage-head">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <GroupRoomIcon />
-                    <div>
-                      <div style={{ fontSize: 14.5, fontWeight: 700 }}>
+          {/* 左下角：本机四大 CLI 身体状态底座 */}
+          <div className="dshfam-sidebar-footer">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--sh-muted-fg)' }}>
+                本机 CLI 身体状态
+              </span>
+              <button
+                type="button"
+                className="sh-btn sh-btn-ghost sh-btn-icon"
+                style={{ width: 20, height: 20 }}
+                disabled={probing}
+                title="重新检测本机 CLI"
+                onClick={() => void handleReprobeBodies()}
+              >
+                <RefreshCw size={11} />
+              </button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 5 }}>
+              {state.bodies.map((b) => (
+                <div
+                  key={b.kind}
+                  title={`${b.label}: ${b.note || (b.available ? '可用' : '未安装')}`}
+                  style={{
+                    padding: '4px 5px',
+                    borderRadius: 6,
+                    border: '1px solid var(--sh-border)',
+                    background: 'var(--sh-card)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 4,
+                  }}
+                >
+                  <MemberAvatar avatar={defaultLobeAvatarForBody(b.kind)} bodyKind={b.kind} size={16} />
+                  <span
+                    className="dshfam-dot"
+                    style={{ width: 6, height: 6 }}
+                    data-state={b.available ? 'working' : 'sleeping'}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        </aside>
+
+        {/* 中栏：对话主舞台 */}
+        <main className="dshfam-main">
+          {target.kind === 'group' && activeGroupRoom ? (
+            <>
+              <div className="dshfam-stage-bar">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                  <span className="dshfam-avatar" style={{ width: 30, height: 30 }}>
+                    <Users size={15} />
+                  </span>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontWeight: 600, fontSize: 14 }}>
                         {activeGroupRoom.title.replace(/^🏠\s*/u, '')}
-                      </div>
-                      <div style={{ fontSize: 11.5, opacity: 0.68 }}>
-                        {activeGroupRoom.activeSpeakerId
-                          ? `@${activeGroupRoom.activeSpeakerId} 正在思考发言…`
-                          : activeGroupRoom.lastPassMemberName
-                            ? `${activeGroupRoom.lastPassMemberName} 已阅（静默旁听）`
-                            : '群内成员各自独立记忆，按未读消息增量接话、互相 @ 协作或提出异议'}
-                      </div>
+                      </span>
+                      <span className="sh-badge">{groupParticipantMembers.length} 位在岗成员</span>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: 'var(--sh-muted-fg)' }}>
+                      {activeGroupRoom.activeSpeakerId
+                        ? `@${activeGroupRoom.activeSpeakerId} 正在拿着话筒发言…`
+                        : activeGroupRoom.lastPassMemberName
+                          ? `${activeGroupRoom.lastPassMemberName} 已阅（无额外补充）`
+                          : '支持 @成员 点名接龙、实时流式发言与跨成员方案争辩'}
                     </div>
                   </div>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {activeGroupRoom.messages.length > 0 && (
+                    <button
+                      type="button"
+                      className="sh-btn sh-btn-ghost sh-btn-sm"
+                      title="清空本群界面展示记录"
+                      onClick={() => void handleClearCurrentHistory()}
+                    >
+                      <Eraser size={13} />
+                      <span>清空记录</span>
+                    </button>
+                  )}
                   {activeGroupRoom.running && (
                     <button
                       type="button"
-                      className="dshfam-btn dshfam-btn-danger"
+                      className="sh-btn sh-btn-destructive sh-btn-sm"
                       onClick={() =>
                         void familyClientApi.interrupt({
                           scopeId: selectedScopeId,
@@ -625,699 +855,691 @@ export function FamilyWorkbench({
                         })
                       }
                     >
-                      暂停讨论
+                      <Square size={11} />
+                      <span>暂停讨论</span>
                     </button>
                   )}
                 </div>
+              </div>
 
-                <div className="dshfam-feed">
-                  {activeGroupRoom.messages.length === 0 ? (
-                    <div
-                      style={{
-                        opacity: 0.6,
-                        fontSize: 13,
-                        margin: 'auto',
-                        textAlign: 'center',
-                        maxWidth: 420,
-                      }}
-                    >
-                      在群里抛出一项任务或方案议题吧！你可以直接广播让全员评估分工，也可以点下方 `@成员` 指定谁先开口。
+              <div
+                ref={streamRef}
+                className="dshfam-stream"
+                onScroll={(e) => {
+                  const el = e.currentTarget;
+                  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+                  stickToBottomRef.current = nearBottom;
+                  if (nearBottom) setShowJumpBottom(false);
+                }}
+              >
+                {activeGroupRoom.messages.length === 0 && !activeGroupRoom.streamingDraft ? (
+                  <div
+                    style={{
+                      margin: 'auto',
+                      maxWidth: 480,
+                      textAlign: 'center',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: 14,
+                    }}
+                  >
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {groupParticipantMembers.slice(0, 5).map((m) => (
+                        <MemberAvatar
+                          key={m.id}
+                          avatar={m.avatar}
+                          bodyKind={m.body.kind}
+                          alt={m.name}
+                          size={34}
+                        />
+                      ))}
                     </div>
-                  ) : (
-                    activeGroupRoom.messages.map((msg) => {
+                    <div>
+                      <div style={{ fontSize: 15, fontWeight: 600 }}>
+                        在「{activeGroupRoom.title.replace(/^🏠\s*/u, '')}」召集大家一起干活
+                      </div>
+                      <div style={{ fontSize: 12.5, color: 'var(--sh-muted-fg)', marginTop: 4 }}>
+                        每位成员拥有独立 CLI 身体与灵魂，会按未读增量阅读前面伙伴的发言、互相 @ 接龙商量或直言拒绝不合理方案。
+                      </div>
+                    </div>
+                    {groupParticipantMembers.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 8 }}>
+                        {[
+                          '大家简短报个到，说说各自擅长什么、什么事可以找你配合',
+                          '结合当前工作区代码，大家讨论一下最值得优化的一个模块并分工',
+                        ].map((promptIdea) => (
+                          <button
+                            key={promptIdea}
+                            type="button"
+                            className="sh-btn sh-btn-outline sh-btn-sm"
+                            onClick={() => dispatchMessageNonBlocking(promptIdea)}
+                          >
+                            {promptIdea}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    {activeGroupRoom.messages.map((msg) => {
                       const isHuman = msg.senderId === 'human';
                       const senderMember = state.members.find((m) => m.id === msg.senderId);
                       return (
-                        <div key={msg.id} className="dshfam-bubble" data-mine={String(isHuman)}>
-                          <div className="dshfam-bubble-meta">
-                            {!isHuman && (
-                              <MemberAvatar
-                                avatar={senderMember?.avatar ?? msg.senderAvatar}
-                                bodyKind={senderMember?.body.kind}
-                                alt={msg.senderName}
-                                size={20}
-                              />
-                            )}
-                            <span>{msg.senderName}</span>
-                            {!isHuman && <span className="dshfam-mono-tag">@{msg.senderId}</span>}
-                            {senderMember && (
-                              <span className="dshfam-mono-tag">{senderMember.body.kind}</span>
-                            )}
+                        <div key={msg.id} className="sh-msg-row" data-mine={String(isHuman)}>
+                          {!isHuman && (
+                            <MemberAvatar
+                              avatar={senderMember?.avatar ?? msg.senderAvatar}
+                              bodyKind={senderMember?.body.kind}
+                              alt={msg.senderName}
+                              size={30}
+                            />
+                          )}
+                          <div className="sh-msg-card">
+                            <div className="sh-msg-head">
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <span style={{ fontWeight: 600, fontSize: 12.5 }}>{msg.senderName}</span>
+                                {!isHuman && <span className="sh-badge">@{msg.senderId}</span>}
+                                {senderMember && (
+                                  <span className="sh-badge">{senderMember.body.kind}</span>
+                                )}
+                              </div>
+                              <div className="sh-msg-actions">
+                                <CopyMessageButton text={msg.content} />
+                                {!isHuman && (
+                                  <HandoffPopoverButton
+                                    sourceAuthor={msg.senderName}
+                                    content={msg.content}
+                                    candidates={enabledMembers.filter((m) => m.id !== msg.senderId)}
+                                    onHandoff={handleHandoffToMember}
+                                  />
+                                )}
+                              </div>
+                            </div>
+                            <RichMessageContent
+                              content={msg.content}
+                              validMemberIds={validMemberIdSet}
+                              onSelectMember={(mId) => setTarget({ kind: 'member', memberId: mId })}
+                            />
                           </div>
-                          <div>{msg.content}</div>
                         </div>
                       );
-                    })
-                  )}
-                </div>
+                    })}
 
-                <div className="dshfam-composer">
-                  {enabledMembers.length > 0 && (
-                    <div className="dshfam-mention-bar">
-                      <span style={{ fontSize: 11, opacity: 0.6 }}>点名接话：</span>
-                      {enabledMembers.map((m) => (
-                        <button
-                          key={m.id}
-                          type="button"
-                          className="dshfam-chip"
-                          onClick={() =>
-                            setComposerText(
-                              (prev) => `${prev}${prev.endsWith(' ') || !prev ? '' : ' '}@${m.id} `
-                            )
+                    {/* 群聊内实时打字流式气泡 */}
+                    {activeGroupRoom.streamingDraft && (
+                      <div className="sh-msg-row" data-mine="false">
+                        <MemberAvatar
+                          avatar={activeGroupRoom.streamingDraft.senderAvatar}
+                          bodyKind={
+                            state.members.find(
+                              (m) => m.id === activeGroupRoom.streamingDraft?.senderId
+                            )?.body.kind
                           }
-                        >
-                          <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} alt={m.name} size={15} />
-                          <span>@{m.id}</span>
-                        </button>
-                      ))}
+                          alt={activeGroupRoom.streamingDraft.senderName}
+                          size={30}
+                        />
+                        <div className="sh-msg-card">
+                          <div className="sh-msg-head">
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span style={{ fontWeight: 600, fontSize: 12.5 }}>
+                                {activeGroupRoom.streamingDraft.senderName}
+                              </span>
+                              <span className="sh-badge">
+                                @{activeGroupRoom.streamingDraft.senderId}
+                              </span>
+                              {activeGroupRoom.streamingDraft.statusSummary && (
+                                <span className="sh-badge">
+                                  {activeGroupRoom.streamingDraft.statusSummary}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          {activeGroupRoom.streamingDraft.content ? (
+                            <RichMessageContent
+                              content={activeGroupRoom.streamingDraft.content}
+                              validMemberIds={validMemberIdSet}
+                            />
+                          ) : (
+                            <div style={{ color: 'var(--sh-muted-fg)', fontSize: 12.5 }}>
+                              正在组织发言…
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {showJumpBottom && (
+                <button
+                  type="button"
+                  className="sh-btn sh-btn-secondary sh-btn-sm"
+                  onClick={scrollToBottom}
+                  style={{
+                    position: 'absolute',
+                    bottom: 108,
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    boxShadow: 'var(--sh-shadow-lg)',
+                    borderRadius: 999,
+                  }}
+                >
+                  <ArrowDown size={12} />
+                  <span>回到底部看新动态</span>
+                </button>
+              )}
+
+              <SmartComposer
+                mode="group"
+                placeholder="输入 @ 点名成员发言，或直接布置协作议题…"
+                members={groupParticipantMembers}
+                isBusy={activeGroupRoom.running}
+                sendFresh={false}
+                onToggleFresh={() => undefined}
+                onSubmit={(msg) => dispatchMessageNonBlocking(msg)}
+                onStop={() =>
+                  void familyClientApi.interrupt({
+                    scopeId: selectedScopeId,
+                    groupId: activeGroupRoom.id,
+                  })
+                }
+                onSlashCommand={(cmd) => {
+                  if (cmd === 'clear') void handleClearCurrentHistory();
+                }}
+                disabled={groupParticipantMembers.length === 0}
+                externalInsertText={composerInsert}
+              />
+            </>
+          ) : activeMember ? (
+            <>
+              <div className="dshfam-stage-bar">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                  <MemberAvatar
+                    avatar={activeMember.avatar}
+                    bodyKind={activeMember.body.kind}
+                    alt={activeMember.name}
+                    size={32}
+                  />
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 600, fontSize: 14 }}>{activeMember.name}</span>
+                      <span className="sh-badge">@{activeMember.id}</span>
+                      <span className="sh-badge">{activeMember.body.kind}</span>
+                      {(activeMemberSnapshot?.queueLength ?? 0) > 0 && (
+                        <span className="sh-badge">
+                          排队 {activeMemberSnapshot?.queueLength}
+                        </span>
+                      )}
                     </div>
-                  )}
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-                    <textarea
-                      className="dshfam-textarea"
-                      placeholder="在群里布置协作目标、方案讨论或随时插话拍板（Cmd/Ctrl + Enter 发送）…"
-                      value={composerText}
-                      onChange={(e) => setComposerText(e.target.value)}
-                      onKeyDown={(e) => {
-                        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                          e.preventDefault();
-                          void handleSendInLounge();
-                        }
+                    <div
+                      style={{
+                        fontSize: 11.5,
+                        color: 'var(--sh-muted-fg)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
                       }}
-                    />
-                    <button
-                      type="button"
-                      className="dshfam-btn dshfam-btn-primary"
-                      disabled={!composerText.trim() || enabledMembers.length === 0}
-                      onClick={() => void handleSendInLounge()}
-                      style={{ height: 40, padding: '0 16px' }}
                     >
-                      发送群消息
-                    </button>
+                      {activeMemberSnapshot?.statusText || activeMember.specialty}
+                    </div>
                   </div>
                 </div>
-              </>
-            ) : activeMember ? (
-              <>
-                <div className="dshfam-stage-head">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    className="sh-btn sh-btn-ghost sh-btn-sm"
+                    onClick={() => openEditSheet(activeMember)}
+                  >
+                    <Pencil size={12} />
+                    <span>编辑</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="sh-btn sh-btn-ghost sh-btn-sm"
+                    title="休眠当前身体，下次派活开启全新上下文"
+                    onClick={() =>
+                      void familyClientApi.resetSession(selectedScopeId, activeMember.id)
+                    }
+                  >
+                    <RotateCcw size={12} />
+                    <span>重置身体</span>
+                  </button>
+                  {(activeMemberSnapshot?.entries.length ?? 0) > 0 && (
+                    <button
+                      type="button"
+                      className="sh-btn sh-btn-ghost sh-btn-sm"
+                      onClick={() => void handleClearCurrentHistory()}
+                    >
+                      <Eraser size={12} />
+                      <span>清屏</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div
+                ref={streamRef}
+                className="dshfam-stream"
+                onScroll={(e) => {
+                  const el = e.currentTarget;
+                  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+                  stickToBottomRef.current = nearBottom;
+                  if (nearBottom) setShowJumpBottom(false);
+                }}
+              >
+                {(activeMemberSnapshot?.entries ?? []).length === 0 ? (
+                  <div
+                    style={{
+                      margin: 'auto',
+                      maxWidth: 460,
+                      textAlign: 'center',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: 12,
+                    }}
+                  >
                     <MemberAvatar
                       avatar={activeMember.avatar}
                       bodyKind={activeMember.body.kind}
                       alt={activeMember.name}
-                      size={36}
-                    />
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: 14.5, fontWeight: 700 }}>{activeMember.name}</span>
-                        <span className="dshfam-mono-tag">@{activeMember.id}</span>
-                        <span className="dshfam-mono-tag">身体: {activeMember.body.kind}</span>
-                      </div>
-                      <div style={{ fontSize: 11.5, opacity: 0.68, marginTop: 2 }}>
-                        {activeMemberSnapshot?.statusText || activeMember.specialty}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                    <button
-                      type="button"
-                      className="dshfam-btn"
-                      onClick={() => openEditForm(activeMember)}
-                    >
-                      编辑灵魂与头像
-                    </button>
-                    <button
-                      type="button"
-                      className="dshfam-btn"
-                      onClick={() =>
-                        void familyClientApi.resetSession(selectedScopeId, activeMember.id)
-                      }
-                    >
-                      重置身体
-                    </button>
-                    {(activeMemberSnapshot?.state === 'working' ||
-                      activeMemberSnapshot?.state === 'in_call') && (
-                      <button
-                        type="button"
-                        className="dshfam-btn dshfam-btn-danger"
-                        onClick={() =>
-                          void familyClientApi.interrupt({
-                            scopeId: selectedScopeId,
-                            memberId: activeMember.id,
-                          })
-                        }
-                      >
-                        中断
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="dshfam-feed">
-                  {(activeMemberSnapshot?.entries ?? []).length === 0 ? (
-                    <div
-                      style={{
-                        opacity: 0.62,
-                        fontSize: 13,
-                        margin: 'auto',
-                        textAlign: 'center',
-                        maxWidth: 420,
-                      }}
-                    >
-                      直接给 {activeMember.name} 交代工作吧！TA 会使用本机 `{activeMember.body.kind}` 身体独立完成，需要其他家人配合时也会自己掏随身手机联系对方。
-                    </div>
-                  ) : (
-                    (activeMemberSnapshot?.entries ?? []).map((entry) => {
-                      const isHuman = entry.role === 'human';
-                      return (
-                        <div key={entry.id} className="dshfam-bubble" data-mine={String(isHuman)}>
-                          <div className="dshfam-bubble-meta">
-                            {entry.role === 'member' && (
-                              <MemberAvatar
-                                avatar={activeMember.avatar}
-                                bodyKind={activeMember.body.kind}
-                                alt={activeMember.name}
-                                size={20}
-                              />
-                            )}
-                            <span>{entry.authorName}</span>
-                            {entry.statusSummary && (
-                              <span className="dshfam-mono-tag">{entry.statusSummary}</span>
-                            )}
-                            {entry.streaming && (
-                              <span style={{ color: 'var(--fam-accent)' }}>● 输出中</span>
-                            )}
-                          </div>
-                          <div>{entry.content || (entry.streaming ? '思考中…' : '')}</div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-
-                <div className="dshfam-composer">
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      fontSize: 11.5,
-                    }}
-                  >
-                    <label
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 5,
-                        cursor: 'pointer',
-                        opacity: 0.8,
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={sendFresh}
-                        onChange={(e) => setSendFresh(e.target.checked)}
-                      />
-                      本条任务开启全新身体上下文（不延续此前对话）
-                    </label>
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-                    <textarea
-                      className="dshfam-textarea"
-                      placeholder={`交代给 ${activeMember.name} (@${activeMember.id}) 的工作（Cmd/Ctrl + Enter 发送）…`}
-                      value={composerText}
-                      onChange={(e) => setComposerText(e.target.value)}
-                      onKeyDown={(e) => {
-                        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                          e.preventDefault();
-                          void handleSendInLounge();
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="dshfam-btn dshfam-btn-primary"
-                      disabled={!composerText.trim() || sending}
-                      onClick={() => void handleSendInLounge()}
-                      style={{ height: 40, padding: '0 16px' }}
-                    >
-                      派发任务
-                    </button>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div style={{ margin: 'auto', opacity: 0.6, fontSize: 13 }}>
-                请在左侧选择「家庭总群」或任意家庭成员开始协作
-              </div>
-            )}
-          </section>
-
-          {/* 右栏：随身家庭手机通话动态墙 */}
-          <aside className="dshfam-phone-rail">
-            <div className="dshfam-section-head">
-              <span>家庭手机通话实况</span>
-              <span>{state.callRecords.length}</span>
-            </div>
-
-            {state.callRecords.length === 0 ? (
-              <div style={{ fontSize: 12, opacity: 0.58, lineHeight: 1.5, padding: '8px 4px' }}>
-                当家庭成员在干活途中主动拨打 `phone_call` 请教、协作或拒绝不合理要求时，通话记录会实时出现在这里。
-              </div>
-            ) : (
-              [...state.callRecords].reverse().map((call) => (
-                <div key={call.id} className="dshfam-call-card">
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      fontWeight: 700,
-                    }}
-                  >
-                    <span>
-                      {call.fromMemberName} ➔ {call.toMemberName}
-                    </span>
-                    <span className="dshfam-mono-tag">{call.status}</span>
-                  </div>
-                  <div style={{ opacity: 0.78 }}>诉求：{call.message.slice(0, 110)}</div>
-                  {call.reply && (
-                    <div
-                      style={{
-                        paddingTop: 5,
-                        borderTop: '1px dashed var(--fam-border)',
-                        opacity: 0.92,
-                      }}
-                    >
-                      回应：{call.reply.slice(0, 140)}
-                      {call.reply.length > 140 ? '…' : ''}
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
-          </aside>
-        </div>
-      ) : (
-        /* 页签 2：成员与灵魂工坊 */
-        <div className="dshfam-studio">
-          {/* 本机四大 CLI 身体体检舱 */}
-          <div>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                flexWrap: 'wrap',
-                gap: 10,
-                marginBottom: 10,
-              }}
-            >
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 700 }}>本机 CLI「身体」体检舱</div>
-                <div style={{ fontSize: 12, opacity: 0.68 }}>
-                  一具身体可孕育任意多个不同灵魂的家庭成员；记忆与操作权限均遵循各 CLI 自身意志
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  className="dshfam-btn"
-                  disabled={probing}
-                  onClick={() => void handleReprobe()}
-                >
-                  {probing ? '体检中…' : '重新检测本机 CLI'}
-                </button>
-                <button
-                  type="button"
-                  className="dshfam-btn"
-                  onClick={() => void handleSeedFamily()}
-                >
-                  补齐预设家庭成员
-                </button>
-                <button
-                  type="button"
-                  className="dshfam-btn dshfam-btn-primary"
-                  onClick={() => openCreateForm()}
-                >
-                  + 创造新家庭成员
-                </button>
-              </div>
-            </div>
-
-            <div className="dshfam-body-grid">
-              {state.bodies.map((body) => (
-                <div key={body.kind} className="dshfam-body-card">
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 8,
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <MemberAvatar
-                        avatar={defaultLobeAvatarForBody(body.kind)}
-                        bodyKind={body.kind}
-                        alt={body.label}
-                        size={26}
-                      />
-                      <span style={{ fontWeight: 700, fontSize: 13 }}>{body.label}</span>
-                    </div>
-                    <span
-                      className="dshfam-dot"
-                      data-state={body.available ? 'working' : 'sleeping'}
-                      title={body.available ? '可用' : '未就绪'}
-                    />
-                  </div>
-                  <div className="dshfam-mono-tag" style={{ alignSelf: 'flex-start', marginTop: 2 }}>
-                    {body.kind} · {body.available ? '已就绪' : '未检测到'}
-                  </div>
-                  <div style={{ fontSize: 11, opacity: 0.65, wordBreak: 'break-all' }}>
-                    {body.note || body.executablePath || ''}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* 新建 / 编辑成员灵魂与头像表单 */}
-          {formOpen && (
-            <form
-              onSubmit={(e) => void handleSaveMember(e)}
-              style={{
-                padding: 16,
-                borderRadius: 12,
-                border: '1px solid var(--fam-accent)',
-                background: 'var(--fam-surface)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 14,
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  flexWrap: 'wrap',
-                  gap: 8,
-                }}
-              >
-                <div style={{ fontSize: 14, fontWeight: 700 }}>
-                  {editingMemberId ? `编辑成员灵魂与头像 (@${editingMemberId})` : '赋予新成员「身体 + 灵魂 + 头像」'}
-                </div>
-                {!editingMemberId && state.templates.length > 0 && (
-                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11.5, opacity: 0.65 }}>套用灵感模板：</span>
-                    {state.templates.map((tpl) => (
-                      <button
-                        key={tpl.id}
-                        type="button"
-                        className="dshfam-chip"
-                        onClick={() => openCreateForm(tpl)}
-                      >
-                        <MemberAvatar avatar={tpl.avatar} bodyKind={tpl.recommendedBody} alt={tpl.name} size={15} />
-                        <span>{tpl.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-                <div>
-                  <label style={{ fontSize: 11.5, fontWeight: 600 }}>唯一代号 ID（英文小写/连字符）</label>
-                  <input
-                    className="dshfam-input"
-                    disabled={Boolean(editingMemberId)}
-                    placeholder="如 fe-sis、sec-guard"
-                    value={formId}
-                    onChange={(e) => setFormId(e.target.value)}
-                    required
-                  />
-                </div>
-                <div>
-                  <label style={{ fontSize: 11.5, fontWeight: 600 }}>家庭称呼</label>
-                  <input
-                    className="dshfam-input"
-                    placeholder="如 前端妹妹"
-                    value={formName}
-                    onChange={(e) => setFormName(e.target.value)}
-                    required
-                  />
-                </div>
-                <div>
-                  <label style={{ fontSize: 11.5, fontWeight: 600 }}>选择身体（CLI）</label>
-                  <select
-                    className="dshfam-select"
-                    value={formBodyKind}
-                    onChange={(e) => handleBodyKindChange(e.target.value as BodyKind)}
-                  >
-                    {BODY_KINDS.map((k) => (
-                      <option key={k} value={k}>
-                        {k}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* 头像选择区：支持上传本地自定义照片 + LobeHub 官方厂商图标 */}
-              <div
-                style={{
-                  padding: 12,
-                  borderRadius: 10,
-                  border: '1px solid var(--fam-border)',
-                  background: 'var(--fam-bg)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 10,
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    flexWrap: 'wrap',
-                    gap: 10,
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <MemberAvatar
-                      avatar={formAvatar}
-                      bodyKind={formBodyKind}
-                      alt={formName || '头像预览'}
                       size={48}
                     />
                     <div>
-                      <div style={{ fontSize: 12.5, fontWeight: 700 }}>
-                        成员头像（支持 Lobe Icons 厂商图标 或 上传自定义照片）
+                      <div style={{ fontSize: 15, fontWeight: 600 }}>
+                        {activeMember.name} · 独立工作书房
                       </div>
-                      <div style={{ fontSize: 11.5, opacity: 0.68 }}>
-                        {isPhotoAvatarUrl(formAvatar)
-                          ? '当前使用自定义上传照片（自动居中裁剪为高清方形头像）'
-                          : `当前使用厂商图标 (${formAvatar})`}
+                      <div style={{ fontSize: 12.5, color: 'var(--sh-muted-fg)', marginTop: 4 }}>
+                        {activeMember.specialty}。直接交代任务即可，遇到需要其他成员配合时 TA 会主动掏出随身手机联系家里人。
                       </div>
                     </div>
-                  </div>
-
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
-                      style={{ display: 'none' }}
-                      onChange={(e) => void handlePhotoFileChange(e)}
-                    />
-                    <button
-                      type="button"
-                      className="dshfam-btn dshfam-btn-primary"
-                      disabled={uploadingPhoto}
-                      onClick={() => fileInputRef.current?.click()}
-                    >
-                      {uploadingPhoto ? '上传裁剪中…' : '上传自定义照片'}
-                    </button>
-                    <button
-                      type="button"
-                      className="dshfam-btn"
-                      onClick={() => {
-                        setFormAvatar(defaultLobeAvatarForBody(formBodyKind));
-                        setAvatarManuallyChosen(false);
-                      }}
-                    >
-                      恢复当前身体默认图标
-                    </button>
-                  </div>
-                </div>
-
-                <div className="dshfam-icon-grid">
-                  {LOBE_VENDOR_ICONS.map((iconItem) => (
-                    <button
-                      key={iconItem.key}
-                      type="button"
-                      className="dshfam-icon-option"
-                      data-selected={String(formAvatar === iconItem.key)}
-                      onClick={() => {
-                        setFormAvatar(iconItem.key);
-                        setAvatarManuallyChosen(true);
-                      }}
-                    >
-                      <MemberAvatar avatar={iconItem.key} alt={iconItem.label} size={20} />
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {iconItem.label}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label style={{ fontSize: 11.5, fontWeight: 600 }}>
-                  一句话专长职责（展示在家庭名册与手机通讯录中，供同伴选人协作）
-                </label>
-                <input
-                  className="dshfam-input"
-                  placeholder="如：负责 Vue3 组件设计、响应式交互与前端类型把关"
-                  value={formSpecialty}
-                  onChange={(e) => setFormSpecialty(e.target.value)}
-                  required
-                />
-              </div>
-
-              <div>
-                <label style={{ fontSize: 11.5, fontWeight: 600 }}>
-                  灵魂提示词（Soul Prompt：决定 TA 的性格、专业原则、何时主动找人商量、何时拒绝越界要求）
-                </label>
-                <textarea
-                  className="dshfam-textarea"
-                  style={{ minHeight: 120 }}
-                  placeholder="描述这位家庭成员的人格、工作习惯与底线原则…"
-                  value={formSoulPrompt}
-                  onChange={(e) => setFormSoulPrompt(e.target.value)}
-                  required
-                />
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <div>
-                  <label style={{ fontSize: 11, opacity: 0.72 }}>
-                    自定义 CLI 命令路径（可选，留空自动探测本机安装）
-                  </label>
-                  <input
-                    className="dshfam-input"
-                    placeholder="留空默认自动查找"
-                    value={formCommand}
-                    onChange={(e) => setFormCommand(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label style={{ fontSize: 11, opacity: 0.72 }}>
-                    原生附加启动参数（可选，空格分隔，留空继承 CLI 自身默认配置）
-                  </label>
-                  <input
-                    className="dshfam-input"
-                    placeholder="如 --model sonnet（可留空）"
-                    value={formExtraArgs}
-                    onChange={(e) => setFormExtraArgs(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                <button type="button" className="dshfam-btn" onClick={() => setFormOpen(false)}>
-                  取消
-                </button>
-                <button type="submit" className="dshfam-btn dshfam-btn-primary">
-                  保存家庭成员
-                </button>
-              </div>
-            </form>
-          )}
-
-          {/* 在册家庭成员网格 */}
-          <div className="dshfam-member-grid">
-            {state.members.map((member) => (
-              <div
-                key={member.id}
-                className="dshfam-member-card"
-                style={!member.enabled ? { opacity: 0.58 } : undefined}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <MemberAvatar
-                      avatar={member.avatar}
-                      bodyKind={member.body.kind}
-                      alt={member.name}
-                      size={38}
-                    />
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: 14 }}>{member.name}</div>
-                      <div style={{ display: 'flex', gap: 5, marginTop: 2 }}>
-                        <span className="dshfam-mono-tag">@{member.id}</span>
-                        <span className="dshfam-mono-tag">身体: {member.body.kind}</span>
-                      </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 8 }}>
+                      {[
+                        '先看看当前工作区目录结构，告诉我你准备怎么开展工作',
+                        '用你的随身手机看看家里还有哪些伙伴在线',
+                      ].map((idea) => (
+                        <button
+                          key={idea}
+                          type="button"
+                          className="sh-btn sh-btn-outline sh-btn-sm"
+                          onClick={() => dispatchMessageNonBlocking(idea)}
+                        >
+                          {idea}
+                        </button>
+                      ))}
                     </div>
                   </div>
+                ) : (
+                  (activeMemberSnapshot?.entries ?? []).map((entry) => {
+                    const isHuman = entry.role === 'human';
+                    return (
+                      <div key={entry.id} className="sh-msg-row" data-mine={String(isHuman)}>
+                        {!isHuman && (
+                          <MemberAvatar
+                            avatar={entry.role === 'member' ? activeMember.avatar : 'lobe:deepseek'}
+                            bodyKind={activeMember.body.kind}
+                            alt={entry.authorName}
+                            size={30}
+                          />
+                        )}
+                        <div className="sh-msg-card">
+                          <div className="sh-msg-head">
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span style={{ fontWeight: 600, fontSize: 12.5 }}>{entry.authorName}</span>
+                              {entry.statusSummary && (
+                                <span className="sh-badge">{entry.statusSummary}</span>
+                              )}
+                              {entry.streaming && (
+                                <span className="sh-badge" style={{ color: 'var(--sh-emerald)' }}>
+                                  输出中
+                                </span>
+                              )}
+                            </div>
+                            {!entry.streaming && entry.content && (
+                              <div className="sh-msg-actions">
+                                <CopyMessageButton text={entry.content} />
+                                {entry.role === 'member' && (
+                                  <HandoffPopoverButton
+                                    sourceAuthor={activeMember.name}
+                                    content={entry.content}
+                                    candidates={enabledMembers.filter(
+                                      (m) => m.id !== activeMember.id
+                                    )}
+                                    onHandoff={handleHandoffToMember}
+                                  />
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          {entry.content ? (
+                            <RichMessageContent
+                              content={entry.content}
+                              validMemberIds={validMemberIdSet}
+                              onSelectMember={(mId) => setTarget({ kind: 'member', memberId: mId })}
+                            />
+                          ) : (
+                            <div style={{ color: 'var(--sh-muted-fg)', fontSize: 12.5 }}>
+                              {entry.statusSummary || '正在思考与推进…'}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
 
-                  <button
-                    type="button"
-                    className="dshfam-chip"
-                    onClick={() =>
-                      void familyClientApi
-                        .updateMember(member.id, { enabled: !member.enabled })
-                        .then(() => refresh())
-                    }
-                  >
-                    {member.enabled ? '🟢 在岗' : '⏸ 休假'}
-                  </button>
-                </div>
-
-                <div style={{ fontSize: 12.5, fontWeight: 600 }}>{member.specialty}</div>
-                <div
+              {showJumpBottom && (
+                <button
+                  type="button"
+                  className="sh-btn sh-btn-secondary sh-btn-sm"
+                  onClick={scrollToBottom}
                   style={{
-                    fontSize: 12,
-                    opacity: 0.75,
-                    whiteSpace: 'pre-wrap',
-                    maxHeight: 88,
-                    overflow: 'hidden',
+                    position: 'absolute',
+                    bottom: 108,
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    boxShadow: 'var(--sh-shadow-lg)',
+                    borderRadius: 999,
                   }}
                 >
-                  {member.soulPrompt}
-                </div>
+                  <ArrowDown size={12} />
+                  <span>回到底部</span>
+                </button>
+              )}
 
-                <div style={{ display: 'flex', gap: 6, marginTop: 'auto', paddingTop: 6 }}>
-                  <button
-                    type="button"
-                    className="dshfam-btn dshfam-btn-primary"
-                    onClick={() => {
-                      setTarget({ kind: 'member', memberId: member.id });
-                      setActiveTab('lounge');
+              <SmartComposer
+                mode="member"
+                placeholder={
+                  !activeMember.enabled
+                    ? `${activeMember.name} 当前休假停用中，可在右侧开启在岗`
+                    : `交代给 ${activeMember.name} (@${activeMember.id}) 的工作…`
+                }
+                members={enabledMembers}
+                isBusy={Boolean(isCurrentStageBusy)}
+                sendFresh={sendFresh}
+                onToggleFresh={setSendFresh}
+                onSubmit={(msg) => dispatchMessageNonBlocking(msg)}
+                onStop={() =>
+                  void familyClientApi.interrupt({
+                    scopeId: selectedScopeId,
+                    memberId: activeMember.id,
+                  })
+                }
+                onSlashCommand={(cmd) => {
+                  if (cmd === 'clear') void handleClearCurrentHistory();
+                  if (cmd === 'reset') {
+                    void familyClientApi.resetSession(selectedScopeId, activeMember.id);
+                  }
+                }}
+                disabled={!activeMember.enabled}
+                externalInsertText={composerInsert}
+              />
+            </>
+          ) : (
+            <div style={{ margin: 'auto', color: 'var(--sh-muted-fg)' }}>
+              请在左侧选择群聊或家庭成员
+            </div>
+          )}
+        </main>
+
+        {/* 右栏可折叠协作检查器 (Inspector) */}
+        {inspectorOpen && (
+          <aside className="dshfam-inspector">
+            <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--sh-border)' }}>
+              <div className="sh-tabs-list">
+                <button
+                  type="button"
+                  className="sh-tabs-trigger"
+                  data-active={String(inspectorTab === 'calls')}
+                  onClick={() => setInspectorTab('calls')}
+                >
+                  手机通话 ({state.callRecords.length})
+                </button>
+                <button
+                  type="button"
+                  className="sh-tabs-trigger"
+                  data-active={String(inspectorTab === 'context')}
+                  onClick={() => setInspectorTab('context')}
+                >
+                  {target.kind === 'member' ? '灵魂与档案' : '群内成员'}
+                </button>
+              </div>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {inspectorTab === 'calls' ? (
+                state.callRecords.length === 0 ? (
+                  <div
+                    style={{
+                      padding: '24px 10px',
+                      textAlign: 'center',
+                      color: 'var(--sh-muted-fg)',
+                      fontSize: 12,
+                      lineHeight: 1.6,
                     }}
                   >
-                    去客厅派活
-                  </button>
-                  <button type="button" className="dshfam-btn" onClick={() => openEditForm(member)}>
-                    编辑与换头像
-                  </button>
+                    <PhoneCall size={20} style={{ opacity: 0.45, marginBottom: 6 }} />
+                    <div>暂无跨成员通话</div>
+                    <div style={{ fontSize: 11, marginTop: 4 }}>
+                      当成员在执行任务途中主动拨打 `phone_call` 商量方案、协作或拒绝越界要求时，通话纪要会实时呈现在此。
+                    </div>
+                  </div>
+                ) : (
+                  [...state.callRecords].reverse().map((call) => (
+                    <div
+                      key={call.id}
+                      style={{
+                        padding: '10px 11px',
+                        borderRadius: 8,
+                        border: '1px solid var(--sh-border)',
+                        background: 'var(--sh-card)',
+                        fontSize: 12,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                        <span style={{ fontWeight: 600 }}>
+                          {call.fromMemberName} ➔ {call.toMemberName}
+                        </span>
+                        <span className="sh-badge">{call.status}</span>
+                      </div>
+                      <div style={{ color: 'var(--sh-muted-fg)', fontSize: 11.5 }}>
+                        {call.message.slice(0, 120)}
+                      </div>
+                      {call.reply && (
+                        <div
+                          style={{
+                            paddingTop: 6,
+                            borderTop: '1px dashed var(--sh-border)',
+                            fontSize: 11.5,
+                          }}
+                        >
+                          {call.reply.slice(0, 160)}
+                          {call.reply.length > 160 ? '…' : ''}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )
+              ) : target.kind === 'member' && activeMember ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div
+                    style={{
+                      padding: 12,
+                      borderRadius: 9,
+                      border: '1px solid var(--sh-border)',
+                      background: 'var(--sh-card)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 10,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <MemberAvatar
+                        avatar={activeMember.avatar}
+                        bodyKind={activeMember.body.kind}
+                        alt={activeMember.name}
+                        size={40}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: 13.5 }}>{activeMember.name}</div>
+                        <div style={{ display: 'flex', gap: 5, marginTop: 3 }}>
+                          <span className="sh-badge">@{activeMember.id}</span>
+                          <span className="sh-badge">{activeMember.body.kind}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ fontSize: 12, color: 'var(--sh-muted-fg)' }}>
+                      {activeMember.specialty}
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button
+                        type="button"
+                        className="sh-btn sh-btn-outline sh-btn-sm"
+                        style={{ flex: 1 }}
+                        onClick={() => openEditSheet(activeMember)}
+                      >
+                        <Pencil size={12} />
+                        <span>编辑灵魂</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="sh-btn sh-btn-outline sh-btn-sm"
+                        onClick={() =>
+                          void familyClientApi
+                            .updateMember(activeMember.id, { enabled: !activeMember.enabled })
+                            .then(() => refresh())
+                        }
+                      >
+                        {activeMember.enabled ? '设为休假' : '恢复在岗'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sh-muted-fg)', marginBottom: 6 }}>
+                      灵魂准则（Soul Prompt）
+                    </div>
+                    <div
+                      style={{
+                        padding: 11,
+                        borderRadius: 8,
+                        border: '1px solid var(--sh-border)',
+                        background: 'var(--sh-card)',
+                        fontSize: 12,
+                        lineHeight: 1.58,
+                        whiteSpace: 'pre-wrap',
+                      }}
+                    >
+                      {activeMember.soulPrompt}
+                    </div>
+                  </div>
+
                   <button
                     type="button"
-                    className="dshfam-btn dshfam-btn-danger"
+                    className="sh-btn sh-btn-destructive sh-btn-sm"
+                    style={{ alignSelf: 'flex-start' }}
                     onClick={() =>
-                      void familyClientApi.deleteMember(member.id).then(() => refresh())
+                      void familyClientApi.deleteMember(activeMember.id).then(() => {
+                        setTarget({ kind: 'group', groupId: 'family-main' });
+                        return refresh();
+                      })
                     }
                   >
-                    移除
+                    <Trash2 size={12} />
+                    <span>从家庭户口本移除</span>
                   </button>
                 </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sh-muted-fg)', padding: '0 2px' }}>
+                    本群在岗成员（点击可 @ 点名）
+                  </div>
+                  {groupParticipantMembers.map((m) => (
+                    <div
+                      key={m.id}
+                      style={{
+                        padding: '8px 10px',
+                        borderRadius: 8,
+                        border: '1px solid var(--sh-border)',
+                        background: 'var(--sh-card)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 9,
+                      }}
+                    >
+                      <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} alt={m.name} size={28} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: 12.5 }}>{m.name}</div>
+                        <div
+                          style={{
+                            fontSize: 11,
+                            color: 'var(--sh-muted-fg)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {m.specialty}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="sh-btn sh-btn-outline sh-btn-sm"
+                        onClick={() =>
+                          setComposerInsert((prev) => ({
+                            seq: (prev?.seq ?? 0) + 1,
+                            text: `@${m.id} `,
+                          }))
+                        }
+                      >
+                        @TA
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </aside>
+        )}
+      </div>
+
+      {/* 右侧滑出式 Sheet：成员创建、Lobe 图标选择与自定义照片裁剪上传 */}
+      <MemberSheet
+        open={sheetOpen}
+        editingMember={editingMember}
+        templates={state.templates}
+        bodies={state.bodies}
+        onClose={() => setSheetOpen(false)}
+        onSaved={(saved) => {
+          void refresh();
+          setTarget({ kind: 'member', memberId: saved.id });
+        }}
+      />
+
+      {/* Cmd/Ctrl + K 快捷指挥面板 */}
+      <CommandPalette
+        open={paletteOpen}
+        rooms={scopedRooms}
+        members={state.members}
+        onClose={() => setPaletteOpen(false)}
+        onSelectGroup={(gId) => setTarget({ kind: 'group', groupId: gId })}
+        onSelectMember={(mId) => setTarget({ kind: 'member', memberId: mId })}
+        onCreateMember={openCreateSheet}
+        onCreateGroup={() => setCreatingGroup(true)}
+        onReprobeBodies={() => void handleReprobeBodies()}
+        onSeedFamily={() => void handleSeedFamily()}
+        onBackToMainChat={onBackToConversation}
+      />
     </div>
   );
 }

@@ -172,6 +172,14 @@ export interface GroupMessage {
   readonly createdAt: string;
 }
 
+export interface GroupStreamingDraft {
+  readonly senderId: string;
+  readonly senderName: string;
+  readonly senderAvatar: string;
+  readonly content: string;
+  readonly statusSummary?: string;
+}
+
 export interface FamilyGroupRoom {
   /** 默认内置 `'family-main'`（🏠 家庭总群），也支持专题小群 */
   readonly id: string;
@@ -183,6 +191,7 @@ export interface FamilyGroupRoom {
   /** 每个成员已投递到的消息下标，用于切片计算「未读群消息增量」 */
   readonly readCursors: Readonly<Record<string, number>>;
   readonly activeSpeakerId: string | null;
+  readonly streamingDraft?: GroupStreamingDraft | null;
   readonly lastPassMemberName?: string;
   readonly running: boolean;
 }

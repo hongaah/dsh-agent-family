@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 import { formatAvatarPrefixForPrompt } from './avatar-utils.ts';
 import { resolveNodeExecutable } from './cli-locator.ts';
@@ -46,11 +46,15 @@ export interface SendMemberMessageInput {
   readonly senderRole: 'human' | 'lead' | 'peer' | 'system';
   readonly senderName: string;
   readonly message: string;
+  /** 可选 UI 展示文案（省略时使用 message；用于来电场景隐藏冗长系统提示语） */
+  readonly displayMessage?: string;
   readonly cwd: string;
   readonly fresh?: boolean;
   readonly callChain?: readonly string[];
   readonly activeGroupHold?: string | null;
   readonly recordInFeed?: boolean;
+  readonly onDelta?: (accumulatedText: string, delta: string) => void;
+  readonly onStatus?: (summary: string) => void;
   readonly signal?: AbortSignal;
 }
 
@@ -73,17 +77,21 @@ export class FamilyHub {
   >();
   private readonly callRecords: PhoneCallRecord[] = [];
   private readonly listeners = new Set<(event: FamilyRealtimeEvent) => void>();
+  private readonly storageDir?: string;
   private phoneBus: FamilyPhoneBus | null = null;
   private groupEngine: GroupChatEngine | null = null;
 
   public constructor(options: {
     readonly registry: MemberRegistry;
     readonly drivers: readonly BodyDriver[];
+    readonly storageDir?: string;
   }) {
     this.registry = options.registry;
+    this.storageDir = options.storageDir;
     for (const driver of options.drivers) {
       this.drivers.set(driver.kind, driver);
     }
+    this.restoreFeedsFromDisk();
     this.registry.subscribe((members) => {
       this.emit({ type: 'roster_updated', members });
     });
@@ -181,6 +189,15 @@ export class FamilyHub {
     return true;
   }
 
+  public clearMemberEntries(scopeId: string, memberId: string): MemberRuntimeSnapshot {
+    const actor = this.ensureActor(scopeId, memberId, process.cwd());
+    actor.entries = [];
+    this.persistFeedsToDisk();
+    const snap = this.toSnapshot(actor);
+    this.emit({ type: 'member_runtime', snapshot: snap });
+    return snap;
+  }
+
   public async resetMemberSession(scopeId: string, memberId: string): Promise<void> {
     const actor = this.actors.get(this.actorKey(scopeId, memberId));
     if (!actor) return;
@@ -244,7 +261,7 @@ export class FamilyHub {
           id: randomUUID(),
           role: input.senderRole,
           authorName: input.senderName,
-          content: input.message,
+          content: input.displayMessage ?? input.message,
           createdAt: new Date().toISOString(),
         });
       }
@@ -283,6 +300,7 @@ export class FamilyHub {
         for await (const ev of actor.session.sendTurn(input.message, turnController.signal)) {
           if (ev.kind === 'text_delta') {
             streamedText += ev.delta;
+            input.onDelta?.(streamedText, ev.delta);
             if (shouldRecordFeed) {
               this.updateEntry(actor, replyEntryId, {
                 content: streamedText,
@@ -292,6 +310,7 @@ export class FamilyHub {
             }
           } else if (ev.kind === 'status') {
             actor.statusText = ev.summary;
+            input.onStatus?.(ev.summary);
             if (shouldRecordFeed) {
               this.updateEntry(actor, replyEntryId, { statusSummary: ev.summary });
             }
@@ -331,6 +350,7 @@ export class FamilyHub {
             streaming: false,
             statusSummary: undefined,
           });
+          this.persistFeedsToDisk();
         }
 
         actor.state = 'idle';
@@ -363,6 +383,7 @@ export class FamilyHub {
             content: `[异常中断] ${message}`,
             streaming: false,
           });
+          this.persistFeedsToDisk();
         }
         this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
         throw err;
@@ -505,8 +526,9 @@ export class FamilyHub {
         scopeId: params.scopeId,
         memberId: callee.id,
         senderRole: 'peer',
-        senderName: `📞 ${caller?.name ?? params.callerId}`,
+        senderName: `${caller?.name ?? params.callerId} 来电 (${intentLabel})`,
         message: framedIncoming,
+        displayMessage: params.message,
         cwd,
         callChain: nextChain,
         signal: params.signal,
@@ -717,5 +739,59 @@ export class FamilyHub {
       entries: [...actor.entries],
       lastActiveAt: actor.lastActiveAt,
     };
+  }
+
+  private persistFeedsToDisk(): void {
+    if (!this.storageDir) return;
+    try {
+      mkdirSync(this.storageDir, { recursive: true });
+      const filePath = join(this.storageDir, 'member-feeds.json');
+      const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+      const records: Array<{ scopeId: string; memberId: string; entries: MemberChatEntry[] }> = [];
+      for (const actor of this.actors.values()) {
+        const cleanEntries = actor.entries
+          .filter((e) => !e.streaming)
+          .slice(-60);
+        if (cleanEntries.length > 0) {
+          records.push({
+            scopeId: actor.scopeId,
+            memberId: actor.memberId,
+            entries: cleanEntries,
+          });
+        }
+      }
+      writeFileSync(tmpPath, `${JSON.stringify({ version: 1, feeds: records }, null, 2)}\n`, 'utf8');
+      renameSync(tmpPath, filePath);
+    } catch {
+      // 忽略 UI 面板展示历史落盘异常，不影响核心流程
+    }
+  }
+
+  private restoreFeedsFromDisk(): void {
+    if (!this.storageDir) return;
+    const filePath = join(this.storageDir, 'member-feeds.json');
+    if (!existsSync(filePath)) return;
+    try {
+      const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+      const feeds = Array.isArray(parsed.feeds) ? parsed.feeds : [];
+      for (const raw of feeds) {
+        if (!raw || typeof raw !== 'object') continue;
+        const rec = raw as Record<string, unknown>;
+        if (
+          typeof rec.scopeId !== 'string' ||
+          typeof rec.memberId !== 'string' ||
+          !Array.isArray(rec.entries)
+        ) {
+          continue;
+        }
+        const actor = this.ensureActor(rec.scopeId, rec.memberId, process.cwd());
+        actor.entries = rec.entries.filter(
+          (item): item is MemberChatEntry =>
+            Boolean(item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string')
+        );
+      }
+    } catch {
+      // ignore
+    }
   }
 }

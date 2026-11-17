@@ -197,6 +197,29 @@ export const familyClientApi = {
       body: JSON.stringify({ scopeId, memberId }),
     });
   },
+  clearHistory(params: {
+    scopeId: string;
+    memberId?: string;
+    groupId?: string;
+  }): Promise<{ ok: boolean; snapshot?: MemberRuntimeSnapshot; room?: FamilyGroupRoom }> {
+    return requestJson<{ ok: boolean; snapshot?: MemberRuntimeSnapshot; room?: FamilyGroupRoom }>(
+      '/clear-history',
+      {
+        method: 'POST',
+        body: JSON.stringify(params),
+      }
+    );
+  },
+  deleteGroup(
+    scopeId: string,
+    groupId: string
+  ): Promise<{ deleted: boolean; rooms: readonly FamilyGroupRoom[] }> {
+    const qs = new URLSearchParams({ scopeId }).toString();
+    return requestJson<{ deleted: boolean; rooms: readonly FamilyGroupRoom[] }>(
+      `/groups/${encodeURIComponent(groupId)}?${qs}`,
+      { method: 'DELETE' }
+    );
+  },
   createGroup(params: {
     scopeId: string;
     title: string;

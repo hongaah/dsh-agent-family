@@ -456,9 +456,10 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
       const hub = new FamilyHub({
         registry,
         drivers: options.customDrivers ?? defaultDrivers,
+        storageDir,
       });
       hubRef = hub;
-      const groupEngine = new GroupChatEngine(hub, registry);
+      const groupEngine = new GroupChatEngine(hub, registry, storageDir);
       hub.attachGroupEngine(groupEngine);
 
       const phoneBus = new FamilyPhoneBus(hub);
@@ -1150,6 +1151,31 @@ async function handleWebApiRequest(params: {
       const memberId = String(body.memberId ?? '').trim();
       await hub.resetMemberSession(scopeId, memberId);
       writeJson(res, 200, { ok: true, snapshot: hub.getMemberSnapshot(scopeId, memberId) });
+      return;
+    }
+
+    if (method === 'POST' && subPath === '/clear-history') {
+      const body = await readRequestJson(req);
+      const scopeId = typeof body.scopeId === 'string' && body.scopeId.trim() ? body.scopeId : 'default';
+      if (typeof body.memberId === 'string' && body.memberId.trim()) {
+        const snapshot = hub.clearMemberEntries(scopeId, body.memberId.trim());
+        writeJson(res, 200, { ok: true, snapshot });
+        return;
+      }
+      if (typeof body.groupId === 'string' && body.groupId.trim()) {
+        const room = groupEngine.clearRoomMessages(scopeId, body.groupId.trim());
+        writeJson(res, 200, { ok: true, room });
+        return;
+      }
+      writeJson(res, 400, { error: '请指定 memberId 或 groupId。' });
+      return;
+    }
+
+    if (method === 'DELETE' && subPath.startsWith('/groups/')) {
+      const groupId = decodeURIComponent(subPath.slice('/groups/'.length));
+      const scopeId = url.searchParams.get('scopeId') || 'default';
+      const deleted = groupEngine.deleteRoom(scopeId, groupId);
+      writeJson(res, 200, { deleted, rooms: groupEngine.listRooms(scopeId) });
       return;
     }
 

@@ -253,7 +253,73 @@ describe('GroupChatEngine (Family Group Chat, Unread Delta, @Relay, [PASS], and 
     expect(capturedPrompt).not.toContain('只回复 `[PASS]`');
     expect(room.messages).toHaveLength(2);
     expect(room.messages[1]?.content).toBe('肥鱼酱在呢！');
+    // 群聊内部提示词不应污染成员的一对一私聊记录
+    expect(hub.getMemberSnapshot('s-sole', 'arch-bro').entries).toHaveLength(0);
 
     await hub.dispose();
+  });
+
+  it('streams live speaker draft into FamilyGroupRoom during group speech, persists UI history across restarts, and supports clearing', async () => {
+    const chunkedDriver: BodyDriver = {
+      kind: 'claude',
+      awaken: async (): Promise<LiveMemberSession> => ({
+        bodyKind: 'claude',
+        isAlive: () => true,
+        sendTurn: (): AsyncIterable<MemberStreamEvent> => {
+          const q = new AsyncEventQueue<MemberStreamEvent>();
+          setTimeout(() => {
+            q.push({ kind: 'status', summary: '读取接口文件' });
+            q.push({ kind: 'text_delta', delta: '第一段、' });
+            q.push({ kind: 'text_delta', delta: '第二段结论' });
+            q.push({ kind: 'turn_done', finalText: '第一段、第二段结论' });
+            q.close();
+          }, 5);
+          return q;
+        },
+        replyApproval: async () => undefined,
+        dispose: async () => undefined,
+      }),
+    };
+
+    registry.update('fe-sis', { enabled: false });
+    registry.update('qa-guard', { enabled: false });
+
+    const hub1 = new FamilyHub({ registry, drivers: [chunkedDriver], storageDir: tempDir });
+    const group1 = new GroupChatEngine(hub1, registry, tempDir);
+    hub1.attachGroupEngine(group1);
+
+    const streamingDraftsSeen: string[] = [];
+    hub1.subscribe((ev) => {
+      if (ev.type === 'group_updated' && ev.room.streamingDraft?.content) {
+        streamingDraftsSeen.push(ev.room.streamingDraft.content);
+      }
+    });
+
+    const settledRoom = await group1.postMessage({
+      scopeId: 'persist-scope',
+      groupId: 'family-main',
+      senderId: 'human',
+      senderName: '你',
+      content: '汇报进度',
+      cwd: tempDir,
+    });
+
+    expect(streamingDraftsSeen.some((txt) => txt.includes('第一段'))).toBe(true);
+    expect(settledRoom.streamingDraft).toBeNull();
+    expect(settledRoom.messages).toHaveLength(2);
+    await hub1.dispose();
+
+    // 模拟重启 DSH 后重新加载客厅 UI 历史
+    const hub2 = new FamilyHub({ registry, drivers: [chunkedDriver], storageDir: tempDir });
+    const group2 = new GroupChatEngine(hub2, registry, tempDir);
+    hub2.attachGroupEngine(group2);
+
+    const restored = group2.getOrCreateMainRoom('persist-scope');
+    expect(restored.messages).toHaveLength(2);
+    expect(restored.messages[1]?.content).toBe('第一段、第二段结论');
+
+    const cleared = group2.clearRoomMessages('persist-scope', 'family-main');
+    expect(cleared.messages).toHaveLength(0);
+    await hub2.dispose();
   });
 });
