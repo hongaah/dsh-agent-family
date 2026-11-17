@@ -44,6 +44,9 @@ const clientCompiled = await build({
   format: 'cjs',
   target: 'es2022',
   jsx: 'automatic',
+  loader: {
+    '.svg': 'text',
+  },
   external: ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client'],
 });
 

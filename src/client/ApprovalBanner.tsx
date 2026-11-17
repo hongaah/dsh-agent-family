@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 
 import type { PendingApproval } from '../core/types.ts';
 import { familyClientApi, familyLiveStore } from './api.ts';
+import { MemberAvatar } from './MemberAvatar.tsx';
 
 export interface ApprovalBannerProps {
   readonly approvals: readonly PendingApproval[];
@@ -34,7 +35,10 @@ export function ApprovalBanner({
   };
 
   return (
-    <div className="dshfam-approval-banner" style={compact ? { margin: '4px 0', padding: '8px 11px' } : undefined}>
+    <div
+      className="dshfam-approval-banner"
+      style={compact ? { margin: '4px 0', padding: '8px 11px' } : undefined}
+    >
       {approvals.map((item) => (
         <div
           key={item.approvalId}
@@ -44,11 +48,25 @@ export function ApprovalBanner({
             gap: 6,
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 700 }}>
-              🙋 {item.memberAvatar} {item.memberName}{' '}
-              <span className="dshfam-mono-tag">{item.bodyKind}</span> 请求你的批示：{item.title}
-            </div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              fontSize: 12.5,
+              fontWeight: 700,
+            }}
+          >
+            <MemberAvatar
+              avatar={item.memberAvatar}
+              bodyKind={item.bodyKind}
+              alt={item.memberName}
+              size={22}
+            />
+            <span>
+              {item.memberName} <span className="dshfam-mono-tag">{item.bodyKind}</span> 请求你的批示：
+              {item.title}
+            </span>
           </div>
 
           {!compact && item.detail && (

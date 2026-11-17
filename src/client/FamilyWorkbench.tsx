@@ -1,8 +1,15 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
+import { defaultLobeAvatarForBody } from '../core/avatar-spec.ts';
 import { BODY_KINDS, type BodyKind, type FamilyMember, type StarterMemberTemplate } from '../core/types.ts';
 import { ApprovalBanner } from './ApprovalBanner.tsx';
 import { familyClientApi, useFamilyLiveState } from './api.ts';
+import {
+  isPhotoAvatarUrl,
+  LOBE_VENDOR_ICONS,
+  MemberAvatar,
+  prepareUploadedPhotoDataUrl,
+} from './MemberAvatar.tsx';
 
 export interface SessionSummaryOption {
   readonly id: string;
@@ -20,16 +27,37 @@ type LoungeTarget =
   | { readonly kind: 'group'; readonly groupId: string }
   | { readonly kind: 'member'; readonly memberId: string };
 
-const AVATAR_PRESETS = ['🏛️', '🎨', '⚙️', '🛡️', '🧠', '🚀', '🔍', '🦊', '🦉', '⚡'] as const;
-
 const STATE_LABELS: Readonly<Record<string, string>> = {
   sleeping: '休眠待唤醒',
   idle: '空闲待命',
   working: '独立推进中',
-  in_call: '📞 通话协商中',
-  awaiting_approval: '🙋 举手待批示',
+  in_call: '通话协商中',
+  awaiting_approval: '举手待批示',
   error: '连接异常',
 };
+
+function GroupRoomIcon(): React.ReactElement {
+  return (
+    <span className="dshfam-avatar" style={{ width: 30, height: 30 }}>
+      <svg width={17} height={17} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="9" cy="8" r="3" stroke="currentColor" strokeWidth="1.8" />
+        <circle cx="16.5" cy="9.5" r="2.5" stroke="currentColor" strokeWidth="1.7" />
+        <path
+          d="M3.5 19c0-2.7 2.4-4.8 5.5-4.8s5.5 2.1 5.5 4.8"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+        />
+        <path
+          d="M15 18.8c.4-1.9 1.9-3.3 3.8-3.3 1 0 1.8.4 2.4 1"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+        />
+      </svg>
+    </span>
+  );
+}
 
 export function FamilyWorkbench({
   sessions,
@@ -45,23 +73,26 @@ export function FamilyWorkbench({
   const [sending, setSending] = useState<boolean>(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
-  // 新建专题群弹窗状态
+  // 新建专题群状态
   const [creatingGroup, setCreatingGroup] = useState<boolean>(false);
   const [newGroupTitle, setNewGroupTitle] = useState<string>('');
   const [newGroupMembers, setNewGroupMembers] = useState<string[]>([]);
 
-  // 成员与灵魂工坊编辑表单状态
+  // 成员与灵魂工坊编辑状态
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState<boolean>(false);
   const [formId, setFormId] = useState<string>('');
   const [formName, setFormName] = useState<string>('');
-  const [formAvatar, setFormAvatar] = useState<string>('🏛️');
+  const [formAvatar, setFormAvatar] = useState<string>('lobe:claudecode');
+  const [avatarManuallyChosen, setAvatarManuallyChosen] = useState<boolean>(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState<boolean>(false);
   const [formSpecialty, setFormSpecialty] = useState<string>('');
   const [formBodyKind, setFormBodyKind] = useState<BodyKind>('claude');
   const [formCommand, setFormCommand] = useState<string>('');
   const [formExtraArgs, setFormExtraArgs] = useState<string>('');
   const [formSoulPrompt, setFormSoulPrompt] = useState<string>('');
   const [probing, setProbing] = useState<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (selectedScopeId === 'default' && sessions.length > 0 && sessions[0]?.id) {
@@ -121,12 +152,14 @@ export function FamilyWorkbench({
   }, [state.bodies]);
 
   const openCreateForm = (tpl?: StarterMemberTemplate) => {
+    const initialBody = tpl?.recommendedBody ?? firstAvailableBody;
     setEditingMemberId(null);
     setFormId(tpl?.id ?? '');
     setFormName(tpl?.name ?? '');
-    setFormAvatar(tpl?.avatar ?? '🏛️');
+    setFormAvatar(tpl?.avatar ?? defaultLobeAvatarForBody(initialBody));
+    setAvatarManuallyChosen(Boolean(tpl?.avatar));
     setFormSpecialty(tpl?.specialty ?? '');
-    setFormBodyKind(tpl?.recommendedBody ?? firstAvailableBody);
+    setFormBodyKind(initialBody);
     setFormCommand('');
     setFormExtraArgs('');
     setFormSoulPrompt(tpl?.soulPrompt ?? '');
@@ -139,6 +172,7 @@ export function FamilyWorkbench({
     setFormId(member.id);
     setFormName(member.name);
     setFormAvatar(member.avatar);
+    setAvatarManuallyChosen(true);
     setFormSpecialty(member.specialty);
     setFormBodyKind(member.body.kind);
     setFormCommand(member.body.command ?? '');
@@ -146,6 +180,31 @@ export function FamilyWorkbench({
     setFormSoulPrompt(member.soulPrompt);
     setFormOpen(true);
     setActiveTab('studio');
+  };
+
+  const handleBodyKindChange = (nextKind: BodyKind) => {
+    setFormBodyKind(nextKind);
+    if (!avatarManuallyChosen) {
+      setFormAvatar(defaultLobeAvatarForBody(nextKind));
+    }
+  };
+
+  const handlePhotoFileChange = async (ev: React.ChangeEvent<HTMLInputElement>) => {
+    const file = ev.target.files?.[0];
+    ev.target.value = '';
+    if (!file) return;
+    setErrorBanner(null);
+    setUploadingPhoto(true);
+    try {
+      const preparedDataUrl = await prepareUploadedPhotoDataUrl(file);
+      const uploaded = await familyClientApi.uploadAvatar(preparedDataUrl);
+      setFormAvatar(uploaded.url);
+      setAvatarManuallyChosen(true);
+    } catch (err) {
+      setErrorBanner(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploadingPhoto(false);
+    }
   };
 
   const handleSaveMember = async (ev: React.FormEvent) => {
@@ -268,8 +327,8 @@ export function FamilyWorkbench({
       {/* 顶部栏 */}
       <div className="dshfam-topbar">
         <div className="dshfam-brand">
-          <div className="dshfam-brand-badge">🏠</div>
-          <div>
+          <MemberAvatar avatar="lobe:deepseek" size={32} className="dshfam-brand-badge" />
+          <div style={{ minWidth: 0 }}>
             <div className="dshfam-brand-title">智能体家庭 · Agents Family</div>
             <div className="dshfam-brand-sub">
               CLI 是身体，提示词是灵魂，随身手机与家庭群聊让成员像真人一样独立或协作完活
@@ -277,7 +336,7 @@ export function FamilyWorkbench({
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           {sessions.length > 0 && (
             <select
               aria-label="关联工作区会话"
@@ -302,7 +361,7 @@ export function FamilyWorkbench({
               data-active={String(activeTab === 'lounge')}
               onClick={() => setActiveTab('lounge')}
             >
-              🏠 家庭客厅 {workingCount > 0 ? `(${workingCount} 忙碌)` : ''}
+              家庭客厅 {workingCount > 0 ? `(${workingCount} 忙碌)` : ''}
             </button>
             <button
               type="button"
@@ -311,7 +370,7 @@ export function FamilyWorkbench({
               data-active={String(activeTab === 'studio')}
               onClick={() => setActiveTab('studio')}
             >
-              ✨ 成员与灵魂工坊 ({state.members.length})
+              成员与灵魂工坊 ({state.members.length})
             </button>
           </div>
 
@@ -402,7 +461,8 @@ export function FamilyWorkbench({
                             )
                           }
                         >
-                          {m.avatar} {m.name}
+                          <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} alt={m.name} size={16} />
+                          <span>{m.name}</span>
                         </button>
                       );
                     })}
@@ -422,7 +482,7 @@ export function FamilyWorkbench({
                 : [
                     {
                       id: 'family-main',
-                      title: '🏠 家庭总群',
+                      title: '家庭总群',
                       scopeId: selectedScopeId,
                       memberIds: 'all_enabled' as const,
                       messages: [],
@@ -439,13 +499,21 @@ export function FamilyWorkbench({
                   data-selected={String(target.kind === 'group' && target.groupId === room.id)}
                   onClick={() => setTarget({ kind: 'group', groupId: room.id })}
                 >
-                  <span className="dshfam-avatar">👥</span>
+                  <GroupRoomIcon />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {room.title}
+                    <div
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 600,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {room.title.replace(/^🏠\s*/u, '')}
                     </div>
                     <div style={{ fontSize: 11, opacity: 0.62 }}>
-                      {room.running ? '💬 正在热烈讨论中…' : `${room.messages.length} 条发言`}
+                      {room.running ? '正在讨论中…' : `${room.messages.length} 条发言`}
                     </div>
                   </div>
                 </button>
@@ -455,11 +523,7 @@ export function FamilyWorkbench({
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <div className="dshfam-section-head">
                 <span>家庭成员（一对一）</span>
-                <button
-                  type="button"
-                  className="dshfam-chip"
-                  onClick={() => openCreateForm()}
-                >
+                <button type="button" className="dshfam-chip" onClick={() => openCreateForm()}>
                   + 新成员
                 </button>
               </div>
@@ -482,7 +546,7 @@ export function FamilyWorkbench({
                     className="dshfam-btn dshfam-btn-primary"
                     onClick={() => void handleSeedFamily()}
                   >
-                    ✨ 一键召入预设四口之家
+                    一键召入预设四口之家
                   </button>
                 </div>
               ) : (
@@ -499,7 +563,12 @@ export function FamilyWorkbench({
                       )}
                       onClick={() => setTarget({ kind: 'member', memberId: member.id })}
                     >
-                      <span className="dshfam-avatar">{member.avatar}</span>
+                      <MemberAvatar
+                        avatar={member.avatar}
+                        bodyKind={member.body.kind}
+                        alt={member.name}
+                        size={30}
+                      />
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                           <span style={{ fontSize: 13, fontWeight: 600 }}>{member.name}</span>
@@ -530,14 +599,19 @@ export function FamilyWorkbench({
             {target.kind === 'group' && activeGroupRoom ? (
               <>
                 <div className="dshfam-stage-head">
-                  <div>
-                    <div style={{ fontSize: 14.5, fontWeight: 700 }}>{activeGroupRoom.title}</div>
-                    <div style={{ fontSize: 11.5, opacity: 0.68 }}>
-                      {activeGroupRoom.activeSpeakerId
-                        ? `🎙️ @${activeGroupRoom.activeSpeakerId} 正在思考发言…`
-                        : activeGroupRoom.lastPassMemberName
-                          ? `🤫 ${activeGroupRoom.lastPassMemberName} 已阅（静默旁听）`
-                          : '群内成员各自独立记忆，按未读消息增量接话、互相 @ 协作或提出异议'}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <GroupRoomIcon />
+                    <div>
+                      <div style={{ fontSize: 14.5, fontWeight: 700 }}>
+                        {activeGroupRoom.title.replace(/^🏠\s*/u, '')}
+                      </div>
+                      <div style={{ fontSize: 11.5, opacity: 0.68 }}>
+                        {activeGroupRoom.activeSpeakerId
+                          ? `@${activeGroupRoom.activeSpeakerId} 正在思考发言…`
+                          : activeGroupRoom.lastPassMemberName
+                            ? `${activeGroupRoom.lastPassMemberName} 已阅（静默旁听）`
+                            : '群内成员各自独立记忆，按未读消息增量接话、互相 @ 协作或提出异议'}
+                      </div>
                     </div>
                   </div>
                   {activeGroupRoom.running && (
@@ -551,14 +625,22 @@ export function FamilyWorkbench({
                         })
                       }
                     >
-                      ⏸ 暂停讨论
+                      暂停讨论
                     </button>
                   )}
                 </div>
 
                 <div className="dshfam-feed">
                   {activeGroupRoom.messages.length === 0 ? (
-                    <div style={{ opacity: 0.6, fontSize: 13, margin: 'auto', textAlign: 'center', maxWidth: 420 }}>
+                    <div
+                      style={{
+                        opacity: 0.6,
+                        fontSize: 13,
+                        margin: 'auto',
+                        textAlign: 'center',
+                        maxWidth: 420,
+                      }}
+                    >
                       在群里抛出一项任务或方案议题吧！你可以直接广播让全员评估分工，也可以点下方 `@成员` 指定谁先开口。
                     </div>
                   ) : (
@@ -568,9 +650,15 @@ export function FamilyWorkbench({
                       return (
                         <div key={msg.id} className="dshfam-bubble" data-mine={String(isHuman)}>
                           <div className="dshfam-bubble-meta">
-                            <span>
-                              {msg.senderAvatar} {msg.senderName}
-                            </span>
+                            {!isHuman && (
+                              <MemberAvatar
+                                avatar={senderMember?.avatar ?? msg.senderAvatar}
+                                bodyKind={senderMember?.body.kind}
+                                alt={msg.senderName}
+                                size={20}
+                              />
+                            )}
+                            <span>{msg.senderName}</span>
                             {!isHuman && <span className="dshfam-mono-tag">@{msg.senderId}</span>}
                             {senderMember && (
                               <span className="dshfam-mono-tag">{senderMember.body.kind}</span>
@@ -593,10 +681,13 @@ export function FamilyWorkbench({
                           type="button"
                           className="dshfam-chip"
                           onClick={() =>
-                            setComposerText((prev) => `${prev}${prev.endsWith(' ') || !prev ? '' : ' '}@${m.id} `)
+                            setComposerText(
+                              (prev) => `${prev}${prev.endsWith(' ') || !prev ? '' : ' '}@${m.id} `
+                            )
                           }
                         >
-                          {m.avatar} @{m.id}
+                          <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} alt={m.name} size={15} />
+                          <span>@{m.id}</span>
                         </button>
                       ))}
                     </div>
@@ -629,25 +720,32 @@ export function FamilyWorkbench({
             ) : activeMember ? (
               <>
                 <div className="dshfam-stage-head">
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 16 }}>{activeMember.avatar}</span>
-                      <span style={{ fontSize: 14.5, fontWeight: 700 }}>{activeMember.name}</span>
-                      <span className="dshfam-mono-tag">@{activeMember.id}</span>
-                      <span className="dshfam-mono-tag">身体: {activeMember.body.kind}</span>
-                    </div>
-                    <div style={{ fontSize: 11.5, opacity: 0.68, marginTop: 2 }}>
-                      {activeMemberSnapshot?.statusText || activeMember.specialty}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                    <MemberAvatar
+                      avatar={activeMember.avatar}
+                      bodyKind={activeMember.body.kind}
+                      alt={activeMember.name}
+                      size={36}
+                    />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 14.5, fontWeight: 700 }}>{activeMember.name}</span>
+                        <span className="dshfam-mono-tag">@{activeMember.id}</span>
+                        <span className="dshfam-mono-tag">身体: {activeMember.body.kind}</span>
+                      </div>
+                      <div style={{ fontSize: 11.5, opacity: 0.68, marginTop: 2 }}>
+                        {activeMemberSnapshot?.statusText || activeMember.specialty}
+                      </div>
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', gap: 6 }}>
+                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                     <button
                       type="button"
                       className="dshfam-btn"
                       onClick={() => openEditForm(activeMember)}
                     >
-                      编辑灵魂
+                      编辑灵魂与头像
                     </button>
                     <button
                       type="button"
@@ -656,7 +754,7 @@ export function FamilyWorkbench({
                         void familyClientApi.resetSession(selectedScopeId, activeMember.id)
                       }
                     >
-                      🔄 重置身体
+                      重置身体
                     </button>
                     {(activeMemberSnapshot?.state === 'working' ||
                       activeMemberSnapshot?.state === 'in_call') && (
@@ -670,7 +768,7 @@ export function FamilyWorkbench({
                           })
                         }
                       >
-                        ⏹ 中断
+                        中断
                       </button>
                     )}
                   </div>
@@ -678,8 +776,16 @@ export function FamilyWorkbench({
 
                 <div className="dshfam-feed">
                   {(activeMemberSnapshot?.entries ?? []).length === 0 ? (
-                    <div style={{ opacity: 0.62, fontSize: 13, margin: 'auto', textAlign: 'center', maxWidth: 420 }}>
-                      直接给 {activeMember.avatar} {activeMember.name} 交代工作吧！TA 会使用本机 `{activeMember.body.kind}` 身体独立完成，需要其他家人配合时也会自己掏随身手机联系对方。
+                    <div
+                      style={{
+                        opacity: 0.62,
+                        fontSize: 13,
+                        margin: 'auto',
+                        textAlign: 'center',
+                        maxWidth: 420,
+                      }}
+                    >
+                      直接给 {activeMember.name} 交代工作吧！TA 会使用本机 `{activeMember.body.kind}` 身体独立完成，需要其他家人配合时也会自己掏随身手机联系对方。
                     </div>
                   ) : (
                     (activeMemberSnapshot?.entries ?? []).map((entry) => {
@@ -687,11 +793,21 @@ export function FamilyWorkbench({
                       return (
                         <div key={entry.id} className="dshfam-bubble" data-mine={String(isHuman)}>
                           <div className="dshfam-bubble-meta">
+                            {entry.role === 'member' && (
+                              <MemberAvatar
+                                avatar={activeMember.avatar}
+                                bodyKind={activeMember.body.kind}
+                                alt={activeMember.name}
+                                size={20}
+                              />
+                            )}
                             <span>{entry.authorName}</span>
                             {entry.statusSummary && (
                               <span className="dshfam-mono-tag">{entry.statusSummary}</span>
                             )}
-                            {entry.streaming && <span style={{ color: 'var(--fam-accent)' }}>● 输出中</span>}
+                            {entry.streaming && (
+                              <span style={{ color: 'var(--fam-accent)' }}>● 输出中</span>
+                            )}
                           </div>
                           <div>{entry.content || (entry.streaming ? '思考中…' : '')}</div>
                         </div>
@@ -701,8 +817,23 @@ export function FamilyWorkbench({
                 </div>
 
                 <div className="dshfam-composer">
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11.5 }}>
-                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer', opacity: 0.8 }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      fontSize: 11.5,
+                    }}
+                  >
+                    <label
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        cursor: 'pointer',
+                        opacity: 0.8,
+                      }}
+                    >
                       <input
                         type="checkbox"
                         checked={sendFresh}
@@ -746,7 +877,7 @@ export function FamilyWorkbench({
           {/* 右栏：随身家庭手机通话动态墙 */}
           <aside className="dshfam-phone-rail">
             <div className="dshfam-section-head">
-              <span>📞 家庭手机通话实况</span>
+              <span>家庭手机通话实况</span>
               <span>{state.callRecords.length}</span>
             </div>
 
@@ -757,7 +888,14 @@ export function FamilyWorkbench({
             ) : (
               [...state.callRecords].reverse().map((call) => (
                 <div key={call.id} className="dshfam-call-card">
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontWeight: 700 }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      fontWeight: 700,
+                    }}
+                  >
                     <span>
                       {call.fromMemberName} ➔ {call.toMemberName}
                     </span>
@@ -786,21 +924,43 @@ export function FamilyWorkbench({
         <div className="dshfam-studio">
           {/* 本机四大 CLI 身体体检舱 */}
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: 10,
+                marginBottom: 10,
+              }}
+            >
               <div>
                 <div style={{ fontSize: 14, fontWeight: 700 }}>本机 CLI「身体」体检舱</div>
                 <div style={{ fontSize: 12, opacity: 0.68 }}>
                   一具身体可孕育任意多个不同灵魂的家庭成员；记忆与操作权限均遵循各 CLI 自身意志
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button type="button" className="dshfam-btn" disabled={probing} onClick={() => void handleReprobe()}>
-                  {probing ? '体检中…' : '🔄 重新检测本机 CLI'}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="dshfam-btn"
+                  disabled={probing}
+                  onClick={() => void handleReprobe()}
+                >
+                  {probing ? '体检中…' : '重新检测本机 CLI'}
                 </button>
-                <button type="button" className="dshfam-btn" onClick={() => void handleSeedFamily()}>
-                  ✨ 补齐预设家庭成员
+                <button
+                  type="button"
+                  className="dshfam-btn"
+                  onClick={() => void handleSeedFamily()}
+                >
+                  补齐预设家庭成员
                 </button>
-                <button type="button" className="dshfam-btn dshfam-btn-primary" onClick={() => openCreateForm()}>
+                <button
+                  type="button"
+                  className="dshfam-btn dshfam-btn-primary"
+                  onClick={() => openCreateForm()}
+                >
                   + 创造新家庭成员
                 </button>
               </div>
@@ -809,15 +969,30 @@ export function FamilyWorkbench({
             <div className="dshfam-body-grid">
               {state.bodies.map((body) => (
                 <div key={body.kind} className="dshfam-body-card">
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={{ fontWeight: 700, fontSize: 13 }}>{body.label}</span>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <MemberAvatar
+                        avatar={defaultLobeAvatarForBody(body.kind)}
+                        bodyKind={body.kind}
+                        alt={body.label}
+                        size={26}
+                      />
+                      <span style={{ fontWeight: 700, fontSize: 13 }}>{body.label}</span>
+                    </div>
                     <span
                       className="dshfam-dot"
                       data-state={body.available ? 'working' : 'sleeping'}
                       title={body.available ? '可用' : '未就绪'}
                     />
                   </div>
-                  <div className="dshfam-mono-tag" style={{ alignSelf: 'flex-start' }}>
+                  <div className="dshfam-mono-tag" style={{ alignSelf: 'flex-start', marginTop: 2 }}>
                     {body.kind} · {body.available ? '已就绪' : '未检测到'}
                   </div>
                   <div style={{ fontSize: 11, opacity: 0.65, wordBreak: 'break-all' }}>
@@ -828,7 +1003,7 @@ export function FamilyWorkbench({
             </div>
           </div>
 
-          {/* 新建 / 编辑成员灵魂表单 */}
+          {/* 新建 / 编辑成员灵魂与头像表单 */}
           {formOpen && (
             <form
               onSubmit={(e) => void handleSaveMember(e)}
@@ -839,15 +1014,23 @@ export function FamilyWorkbench({
                 background: 'var(--fam-surface)',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: 12,
+                gap: 14,
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: 8,
+                }}
+              >
                 <div style={{ fontSize: 14, fontWeight: 700 }}>
-                  {editingMemberId ? `编辑成员灵魂 (@${editingMemberId})` : '赋予新成员「身体 + 灵魂」'}
+                  {editingMemberId ? `编辑成员灵魂与头像 (@${editingMemberId})` : '赋予新成员「身体 + 灵魂 + 头像」'}
                 </div>
                 {!editingMemberId && state.templates.length > 0 && (
-                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
                     <span style={{ fontSize: 11.5, opacity: 0.65 }}>套用灵感模板：</span>
                     {state.templates.map((tpl) => (
                       <button
@@ -856,7 +1039,8 @@ export function FamilyWorkbench({
                         className="dshfam-chip"
                         onClick={() => openCreateForm(tpl)}
                       >
-                        {tpl.avatar} {tpl.name}
+                        <MemberAvatar avatar={tpl.avatar} bodyKind={tpl.recommendedBody} alt={tpl.name} size={15} />
+                        <span>{tpl.name}</span>
                       </button>
                     ))}
                   </div>
@@ -890,7 +1074,7 @@ export function FamilyWorkbench({
                   <select
                     className="dshfam-select"
                     value={formBodyKind}
-                    onChange={(e) => setFormBodyKind(e.target.value as BodyKind)}
+                    onChange={(e) => handleBodyKindChange(e.target.value as BodyKind)}
                   >
                     {BODY_KINDS.map((k) => (
                       <option key={k} value={k}>
@@ -901,39 +1085,107 @@ export function FamilyWorkbench({
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 10 }}>
-                <div>
-                  <label style={{ fontSize: 11.5, fontWeight: 600 }}>头像标识</label>
-                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
-                    {AVATAR_PRESETS.map((emoji) => (
-                      <button
-                        key={emoji}
-                        type="button"
-                        className="dshfam-chip"
-                        style={
-                          formAvatar === emoji
-                            ? { borderColor: 'var(--fam-accent)', background: 'var(--fam-accent-soft)' }
-                            : undefined
-                        }
-                        onClick={() => setFormAvatar(emoji)}
-                      >
-                        {emoji}
-                      </button>
-                    ))}
+              {/* 头像选择区：支持上传本地自定义照片 + LobeHub 官方厂商图标 */}
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 10,
+                  border: '1px solid var(--fam-border)',
+                  background: 'var(--fam-bg)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 10,
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <MemberAvatar
+                      avatar={formAvatar}
+                      bodyKind={formBodyKind}
+                      alt={formName || '头像预览'}
+                      size={48}
+                    />
+                    <div>
+                      <div style={{ fontSize: 12.5, fontWeight: 700 }}>
+                        成员头像（支持 Lobe Icons 厂商图标 或 上传自定义照片）
+                      </div>
+                      <div style={{ fontSize: 11.5, opacity: 0.68 }}>
+                        {isPhotoAvatarUrl(formAvatar)
+                          ? '当前使用自定义上传照片（自动居中裁剪为高清方形头像）'
+                          : `当前使用厂商图标 (${formAvatar})`}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                      style={{ display: 'none' }}
+                      onChange={(e) => void handlePhotoFileChange(e)}
+                    />
+                    <button
+                      type="button"
+                      className="dshfam-btn dshfam-btn-primary"
+                      disabled={uploadingPhoto}
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      {uploadingPhoto ? '上传裁剪中…' : '上传自定义照片'}
+                    </button>
+                    <button
+                      type="button"
+                      className="dshfam-btn"
+                      onClick={() => {
+                        setFormAvatar(defaultLobeAvatarForBody(formBodyKind));
+                        setAvatarManuallyChosen(false);
+                      }}
+                    >
+                      恢复当前身体默认图标
+                    </button>
                   </div>
                 </div>
-                <div>
-                  <label style={{ fontSize: 11.5, fontWeight: 600 }}>
-                    一句话专长职责（展示在家庭名册与手机通讯录中，供同伴选人协作）
-                  </label>
-                  <input
-                    className="dshfam-input"
-                    placeholder="如：负责 Vue3 组件设计、响应式交互与前端类型把关"
-                    value={formSpecialty}
-                    onChange={(e) => setFormSpecialty(e.target.value)}
-                    required
-                  />
+
+                <div className="dshfam-icon-grid">
+                  {LOBE_VENDOR_ICONS.map((iconItem) => (
+                    <button
+                      key={iconItem.key}
+                      type="button"
+                      className="dshfam-icon-option"
+                      data-selected={String(formAvatar === iconItem.key)}
+                      onClick={() => {
+                        setFormAvatar(iconItem.key);
+                        setAvatarManuallyChosen(true);
+                      }}
+                    >
+                      <MemberAvatar avatar={iconItem.key} alt={iconItem.label} size={20} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {iconItem.label}
+                      </span>
+                    </button>
+                  ))}
                 </div>
+              </div>
+
+              <div>
+                <label style={{ fontSize: 11.5, fontWeight: 600 }}>
+                  一句话专长职责（展示在家庭名册与手机通讯录中，供同伴选人协作）
+                </label>
+                <input
+                  className="dshfam-input"
+                  placeholder="如：负责 Vue3 组件设计、响应式交互与前端类型把关"
+                  value={formSpecialty}
+                  onChange={(e) => setFormSpecialty(e.target.value)}
+                  required
+                />
               </div>
 
               <div>
@@ -995,8 +1247,13 @@ export function FamilyWorkbench({
                 style={!member.enabled ? { opacity: 0.58 } : undefined}
               >
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                    <span className="dshfam-avatar">{member.avatar}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <MemberAvatar
+                      avatar={member.avatar}
+                      bodyKind={member.body.kind}
+                      alt={member.name}
+                      size={38}
+                    />
                     <div>
                       <div style={{ fontWeight: 700, fontSize: 14 }}>{member.name}</div>
                       <div style={{ display: 'flex', gap: 5, marginTop: 2 }}>
@@ -1044,7 +1301,7 @@ export function FamilyWorkbench({
                     去客厅派活
                   </button>
                   <button type="button" className="dshfam-btn" onClick={() => openEditForm(member)}>
-                    编辑
+                    编辑与换头像
                   </button>
                   <button
                     type="button"

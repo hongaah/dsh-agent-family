@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 
+import { AvatarStore, formatAvatarPrefixForPrompt } from '../core/avatar-utils.ts';
 import { probeAllBodies } from '../core/cli-locator.ts';
 import { FamilyHub } from '../core/family-hub.ts';
 import { extractMemberMentions, GroupChatEngine, MAIN_GROUP_ID } from '../core/group-chat.ts';
@@ -234,7 +235,9 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
     name,
     inject,
     apply(ctx: DshHostContext): void {
-      const registry = new MemberRegistry(options.storageDir ?? defaultFamilyStorageDir());
+      const storageDir = options.storageDir ?? defaultFamilyStorageDir();
+      const registry = new MemberRegistry(storageDir);
+      const avatarStore = new AvatarStore(storageDir);
       const observedAgents = new Map<string, DshAgentLike>();
       const managedDshHandles = new Map<string, DshOwnedAgentHandle>();
 
@@ -521,7 +524,7 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
                 }
                 const rosterLines = enabled.map(
                   (m) =>
-                    `- ${m.avatar} **${m.name}** (\`@${m.id}\`, 身体: \`${m.body.kind}\`)：${m.specialty}`
+                    `- ${formatAvatarPrefixForPrompt(m.avatar)}**${m.name}** (\`@${m.id}\`, 身体: \`${m.body.kind}\`)：${m.specialty}`
                 );
                 return [
                   '## 智能体家庭 (Agents Family)',
@@ -619,6 +622,7 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
                   req,
                   res,
                   registry,
+                  avatarStore,
                   hub,
                   groupEngine,
                   sseClients,
@@ -691,7 +695,10 @@ function registerFamilyTools(
             const formatted = results
               .map((item) => {
                 const r = item as Record<string, unknown>;
-                const header = `### ${String(r.avatar ?? '🤖')} ${String(r.memberName ?? r.memberId)} (@${String(r.memberId)} · ${String(r.bodyKind ?? '')})`;
+                const avPrefix = formatAvatarPrefixForPrompt(
+                  typeof r.avatar === 'string' ? r.avatar : undefined
+                );
+                const header = `### ${avPrefix}${String(r.memberName ?? r.memberId)} (@${String(r.memberId)} · ${String(r.bodyKind ?? '')})`;
                 if (r.error) {
                   return `${header}\n❌ 执行失败：${String(r.error)}`;
                 }
@@ -816,7 +823,10 @@ function registerFamilyTools(
             const messages = Array.isArray(v.newMessages) ? v.newMessages : [];
             const lines = messages.map((raw) => {
               const m = raw as Record<string, unknown>;
-              return `- **${String(m.senderAvatar ?? '')} ${String(m.senderName)} (@${String(m.senderId)})**：${String(m.content)}`;
+              const avPrefix = formatAvatarPrefixForPrompt(
+                typeof m.senderAvatar === 'string' ? m.senderAvatar : undefined
+              );
+              return `- **${avPrefix}${String(m.senderName)} (@${String(m.senderId)})**：${String(m.content)}`;
             });
             return [
               {
@@ -953,17 +963,47 @@ async function handleWebApiRequest(params: {
   readonly req: DshHttpRequest;
   readonly res: DshHttpResponse;
   readonly registry: MemberRegistry;
+  readonly avatarStore: AvatarStore;
   readonly hub: FamilyHub;
   readonly groupEngine: GroupChatEngine;
   readonly sseClients: Set<DshHttpResponse>;
   readonly hasNativeDshAgents: () => boolean;
 }): Promise<void> {
-  const { ctx, req, res, registry, hub, groupEngine, sseClients, hasNativeDshAgents } = params;
+  const { ctx, req, res, registry, avatarStore, hub, groupEngine, sseClients, hasNativeDshAgents } =
+    params;
   const url = new URL(req.url ?? '/', 'http://127.0.0.1');
   const subPath = url.pathname.slice(API_PREFIX.length) || '/';
   const method = (req.method ?? 'GET').toUpperCase();
 
   try {
+    if (method === 'POST' && subPath === '/avatars') {
+      const body = await readRequestJson(req);
+      const dataUrl = typeof body.dataUrl === 'string' ? body.dataUrl : '';
+      if (!dataUrl) {
+        writeJson(res, 400, { error: '请提供图片的 dataUrl 内容。' });
+        return;
+      }
+      const saved = avatarStore.saveDataUrl(dataUrl);
+      writeJson(res, 200, saved);
+      return;
+    }
+
+    if (method === 'GET' && subPath.startsWith('/avatars/')) {
+      const filename = decodeURIComponent(subPath.slice('/avatars/'.length));
+      const file = avatarStore.readAvatarFile(filename);
+      if (!file) {
+        writeJson(res, 404, { error: '头像图片不存在' });
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': file.mimeType,
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
+      });
+      res.end(file.buffer);
+      return;
+    }
     if (method === 'GET' && subPath === '/events') {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',

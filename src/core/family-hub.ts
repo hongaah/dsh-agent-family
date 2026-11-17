@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import { formatAvatarPrefixForPrompt } from './avatar-utils.ts';
 import { resolveNodeExecutable } from './cli-locator.ts';
 import type { MemberRegistry } from './member-registry.ts';
 import { composeAwakeningSoul } from './soul-composer.ts';
@@ -389,7 +390,7 @@ export class FamilyHub {
     const lines = enabled.map((item) => {
       const snap = this.getMemberSnapshot(scopeId, item.id);
       const selfTag = item.id === callerId ? '（你自己）' : '';
-      return `- ${item.avatar} ${item.name} (@${item.id})${selfTag} | 身体: ${item.body.kind} | 状态: ${snap.state} | 专长: ${item.specialty}`;
+      return `- ${formatAvatarPrefixForPrompt(item.avatar)}${item.name} (@${item.id})${selfTag} | 身体: ${item.body.kind} | 状态: ${snap.state} | 专长: ${item.specialty}`;
     });
     const rooms = this.groupEngine?.listRooms(scopeId) ?? [];
     const roomLines =
@@ -517,7 +518,7 @@ export class FamilyHub {
         finishedAt: new Date().toISOString(),
       });
 
-      return `【来自 ${callee.avatar} ${callee.name} (@${callee.id}) 的电话回复】\n${outcome.finalText}`;
+      return `【来自 ${formatAvatarPrefixForPrompt(callee.avatar)}${callee.name} (@${callee.id}) 的电话回复】\n${outcome.finalText}`;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       this.updateCall(callId, {
@@ -592,7 +593,10 @@ export class FamilyHub {
     }
     return [
       `【群聊「${updatedRoom.title}」本轮讨论纪要】`,
-      ...newMessages.map((m) => `- ${m.senderAvatar} ${m.senderName} (@${m.senderId}): ${m.content}`),
+      ...newMessages.map(
+        (m) =>
+          `- ${formatAvatarPrefixForPrompt(m.senderAvatar)}${m.senderName} (@${m.senderId}): ${m.content}`
+      ),
     ].join('\n');
   }
 

@@ -1,3 +1,4 @@
+import { formatAvatarPrefixForPrompt } from './avatar-utils.ts';
 import type { FamilyMember } from './types.ts';
 
 /**
@@ -11,13 +12,16 @@ export function composeAwakeningSoul(
   const familyDirectoryLine =
     otherMembers.length > 0
       ? otherMembers
-          .map((item) => `- ${item.avatar} ${item.name} (@${item.id}) [身体: ${item.body.kind}]：${item.specialty}`)
+          .map(
+            (item) =>
+              `- ${formatAvatarPrefixForPrompt(item.avatar)}${item.name} (@${item.id}) [身体: ${item.body.kind}]：${item.specialty}`
+          )
           .join('\n')
       : '- （可随时通过随身手机 `phone_contacts` 查看最新在线的家庭成员）';
 
   return [
     `# 你的具身身份`,
-    `- 称呼：${member.avatar} ${member.name}`,
+    `- 称呼：${formatAvatarPrefixForPrompt(member.avatar)}${member.name}`,
     `- 家庭唯一代号：@${member.id}`,
     `- 专长与职责定位：${member.specialty}`,
     ``,

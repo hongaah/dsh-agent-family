@@ -333,13 +333,47 @@ const FAMILY_CSS = `
 }
 
 .dshfam-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border: 1px solid var(--fam-border);
   background: var(--fam-surface);
   color: inherit;
   border-radius: 999px;
-  padding: 2px 9px;
+  padding: 3px 9px;
   font-size: 11.5px;
   cursor: pointer;
+}
+
+.dshfam-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 6px;
+}
+
+.dshfam-icon-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--fam-border);
+  background: var(--fam-bg);
+  color: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.dshfam-icon-option:hover {
+  border-color: var(--fam-border-strong);
+  background: var(--fam-surface-strong);
+}
+
+.dshfam-icon-option[data-selected="true"] {
+  border-color: var(--fam-accent);
+  background: var(--fam-accent-soft);
+  font-weight: 600;
 }
 
 .dshfam-chip:hover {

@@ -124,6 +124,12 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const familyClientApi = {
+  uploadAvatar(dataUrl: string): Promise<{ filename: string; url: string; mimeType: string }> {
+    return requestJson<{ filename: string; url: string; mimeType: string }>('/avatars', {
+      method: 'POST',
+      body: JSON.stringify({ dataUrl }),
+    });
+  },
   bootstrap(scopeId: string): Promise<FamilyBootstrapState> {
     const qs = new URLSearchParams({ scopeId }).toString();
     return requestJson<FamilyBootstrapState>(`/bootstrap?${qs}`);

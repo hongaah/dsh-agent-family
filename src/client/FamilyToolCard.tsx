@@ -1,5 +1,8 @@
 import React from 'react';
 
+import type { BodyKind } from '../core/types.ts';
+import { MemberAvatar } from './MemberAvatar.tsx';
+
 export interface FamilyToolCardProps {
   readonly sessionId: string;
   readonly toolName: string;
@@ -7,10 +10,12 @@ export interface FamilyToolCardProps {
   readonly onOpenWorkbench: () => void;
 }
 
-/**
- * 挂载在 `tool.call.toolview` 的对话内嵌家庭协作卡片：
- * 直观呈现 `family_assign`（并发成员任务与期间通话）与 `family_group_discuss`（群聊讨论纪要）。
- */
+function asBodyKind(val: unknown): BodyKind | undefined {
+  return val === 'claude' || val === 'codex' || val === 'opencode' || val === 'dsh'
+    ? val
+    : undefined;
+}
+
 export function FamilyToolCard({
   toolName,
   block,
@@ -27,9 +32,14 @@ export function FamilyToolCard({
       <div className="dshfam-toolcard">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span style={{ fontSize: 12.5, fontWeight: 600 }}>
-            🏠 智能体家庭成员正在自主推进任务 ({toolName === 'family_group_discuss' ? '群聊会商中' : '并发执行中'})…
+            智能体家庭成员正在自主推进任务 ({toolName === 'family_group_discuss' ? '群聊会商中' : '并发执行中'})…
           </span>
-          <button type="button" className="dshfam-btn" onClick={onOpenWorkbench} style={{ fontSize: 11.5, padding: '3px 9px' }}>
+          <button
+            type="button"
+            className="dshfam-btn"
+            onClick={onOpenWorkbench}
+            style={{ fontSize: 11.5, padding: '3px 9px' }}
+          >
             进入家庭客厅看实况
           </button>
         </div>
@@ -53,8 +63,15 @@ export function FamilyToolCard({
     return (
       <div className="dshfam-toolcard">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: 13, fontWeight: 700 }}>👥 {title} · 讨论结果 ({messages.length} 条发言)</span>
-          <button type="button" className="dshfam-btn" onClick={onOpenWorkbench} style={{ fontSize: 11.5, padding: '3px 9px' }}>
+          <span style={{ fontSize: 13, fontWeight: 700 }}>
+            {title} · 讨论结果 ({messages.length} 条发言)
+          </span>
+          <button
+            type="button"
+            className="dshfam-btn"
+            onClick={onOpenWorkbench}
+            style={{ fontSize: 11.5, padding: '3px 9px' }}
+          >
             打开群聊室
           </button>
         </div>
@@ -71,8 +88,24 @@ export function FamilyToolCard({
                   fontSize: 12.5,
                 }}
               >
-                <div style={{ fontWeight: 700, fontSize: 11.5, marginBottom: 3 }}>
-                  {String(m.senderAvatar ?? '🤖')} {String(m.senderName ?? '')} (@{String(m.senderId ?? '')})
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    fontWeight: 700,
+                    fontSize: 11.5,
+                    marginBottom: 4,
+                  }}
+                >
+                  <MemberAvatar
+                    avatar={typeof m.senderAvatar === 'string' ? m.senderAvatar : undefined}
+                    alt={String(m.senderName ?? '')}
+                    size={20}
+                  />
+                  <span>
+                    {String(m.senderName ?? '')} (@{String(m.senderId ?? '')})
+                  </span>
                 </div>
                 <div style={{ whiteSpace: 'pre-wrap' }}>{String(m.content ?? '')}</div>
               </div>
@@ -88,9 +121,14 @@ export function FamilyToolCard({
     <div className="dshfam-toolcard">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <span style={{ fontSize: 13, fontWeight: 700 }}>
-          🏠 智能体家庭任务回执（共 {results.length} 位成员交付）
+          智能体家庭任务回执（共 {results.length} 位成员交付）
         </span>
-        <button type="button" className="dshfam-btn" onClick={onOpenWorkbench} style={{ fontSize: 11.5, padding: '3px 9px' }}>
+        <button
+          type="button"
+          className="dshfam-btn"
+          onClick={onOpenWorkbench}
+          style={{ fontSize: 11.5, padding: '3px 9px' }}
+        >
           打开家庭客厅
         </button>
       </div>
@@ -108,14 +146,26 @@ export function FamilyToolCard({
                 fontSize: 12.5,
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, marginBottom: 4 }}>
-                <span>
-                  {String(item.avatar ?? '🤖')} {String(item.memberName ?? item.memberId)}
-                </span>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontWeight: 700,
+                  marginBottom: 4,
+                }}
+              >
+                <MemberAvatar
+                  avatar={typeof item.avatar === 'string' ? item.avatar : undefined}
+                  bodyKind={asBodyKind(item.bodyKind)}
+                  alt={String(item.memberName ?? item.memberId)}
+                  size={20}
+                />
+                <span>{String(item.memberName ?? item.memberId)}</span>
                 <span className="dshfam-mono-tag">@{String(item.memberId ?? '')}</span>
                 <span className="dshfam-mono-tag">{String(item.bodyKind ?? '')}</span>
                 {calls.length > 0 && (
-                  <span style={{ fontSize: 11, opacity: 0.75 }}>📞 拨打了 {calls.length} 通协作电话</span>
+                  <span style={{ fontSize: 11, opacity: 0.75 }}>拨打了 {calls.length} 通协作电话</span>
                 )}
               </div>
               {item.error ? (

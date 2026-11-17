@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { defaultLobeAvatarForBody } from './avatar-utils.ts';
 import {
   BODY_KINDS,
   type BodyKind,
@@ -19,7 +20,7 @@ export const STARTER_MEMBER_TEMPLATES: readonly StarterMemberTemplate[] = [
   {
     id: 'arch-bro',
     name: '架构师大哥',
-    avatar: '🏛️',
+    avatar: 'lobe:claudecode',
     specialty: '系统边界划分、技术方案把关、跨模块重构设计',
     recommendedBody: 'claude',
     soulPrompt: [
@@ -33,7 +34,7 @@ export const STARTER_MEMBER_TEMPLATES: readonly StarterMemberTemplate[] = [
   {
     id: 'fe-sis',
     name: '前端妹妹',
-    avatar: '🎨',
+    avatar: 'lobe:opencode',
     specialty: '前端组件实现、视觉交互细节、无障碍体验与状态流转',
     recommendedBody: 'opencode',
     soulPrompt: [
@@ -47,7 +48,7 @@ export const STARTER_MEMBER_TEMPLATES: readonly StarterMemberTemplate[] = [
   {
     id: 'be-bro',
     name: '后端二哥',
-    avatar: '⚙️',
+    avatar: 'lobe:codex',
     specialty: '服务端逻辑、协议适配、并发控制与性能调优',
     recommendedBody: 'codex',
     soulPrompt: [
@@ -61,7 +62,7 @@ export const STARTER_MEMBER_TEMPLATES: readonly StarterMemberTemplate[] = [
   {
     id: 'qa-guard',
     name: '审查小弟',
-    avatar: '🛡️',
+    avatar: 'lobe:deepseek',
     specialty: '代码审查、边界测试编写、回归验证与风险挑刺',
     recommendedBody: 'dsh',
     soulPrompt: [
@@ -131,7 +132,10 @@ function parsePersistedMembers(raw: unknown): FamilyMember[] {
     parsed.push({
       id: candidate.id,
       name: candidate.name,
-      avatar: typeof candidate.avatar === 'string' && candidate.avatar.trim() ? candidate.avatar : '🧑',
+      avatar:
+        typeof candidate.avatar === 'string' && candidate.avatar.trim()
+          ? candidate.avatar.trim()
+          : defaultLobeAvatarForBody(bodyRaw.kind),
       specialty: candidate.specialty,
       body: normalizeBodySpec({
         kind: bodyRaw.kind,
@@ -216,12 +220,13 @@ export class MemberRegistry {
     }
 
     const now = new Date().toISOString();
+    const normalizedBody = normalizeBodySpec(input.body);
     const member: FamilyMember = {
       id,
       name,
-      avatar: input.avatar?.trim() || '🧑',
+      avatar: input.avatar?.trim() || defaultLobeAvatarForBody(normalizedBody.kind),
       specialty,
-      body: normalizeBodySpec(input.body),
+      body: normalizedBody,
       soulPrompt,
       enabled: input.enabled ?? true,
       createdAt: now,
@@ -278,13 +283,14 @@ export class MemberRegistry {
     const created: FamilyMember[] = [];
     for (const tpl of STARTER_MEMBER_TEMPLATES) {
       if (this.get(tpl.id)) continue;
+      const chosenKind = preferredBodyFallback ?? tpl.recommendedBody;
       created.push(
         this.create({
           id: tpl.id,
           name: tpl.name,
-          avatar: tpl.avatar,
+          avatar: preferredBodyFallback ? defaultLobeAvatarForBody(chosenKind) : tpl.avatar,
           specialty: tpl.specialty,
-          body: { kind: preferredBodyFallback ?? tpl.recommendedBody },
+          body: { kind: chosenKind },
           soulPrompt: tpl.soulPrompt,
         })
       );
