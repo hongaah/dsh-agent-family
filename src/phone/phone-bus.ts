@@ -1,0 +1,347 @@
+import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { resolve } from 'node:path';
+
+import type { FamilyHub } from '../core/family-hub.ts';
+import type { PhoneCallIntent, PhoneMcpLaunchSpec } from '../core/types.ts';
+
+const PHONE_TOOL_SCHEMAS = [
+  {
+    name: 'phone_contacts',
+    description:
+      '查看智能体家庭通讯录：列出当前家里在岗的其他成员（称呼、@代号、身体类型、专长、忙闲状态）以及可用群聊。需要找人商量或配合前可先查看。',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'phone_call',
+    description:
+      '使用家庭手机给指定家庭成员打一对一电话（探讨方案、请求协助或同步进展）。对方会基于自身灵魂与专业立场独立回复（可能配合，也可能提出反建议或明确拒绝）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        to: {
+          type: 'string',
+          description: '目标成员的唯一 ID（例如 fe-sis、be-bro，可不带 @）',
+        },
+        intent: {
+          type: 'string',
+          enum: ['discuss', 'request_help', 'sync'],
+          description: '通话意图：discuss(探讨方案) / request_help(请求协助) / sync(同步知会)',
+        },
+        message: {
+          type: 'string',
+          description: '在电话里向对方清晰说明的背景、问题或协作诉求',
+        },
+      },
+      required: ['to', 'message'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'phone_group_discuss',
+    description:
+      '在家庭群聊（默认家庭总群 family-main，或指定 participants 拉起专题小群）发起多人当面讨论。群成员可看到彼此发言并互相 @ 接龙讨论或提出异议，讨论收敛后返回完整纪要。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        groupId: {
+          type: 'string',
+          description: '可选群 ID；省略且未传 participants 时默认发往家庭总群 family-main',
+        },
+        title: {
+          type: 'string',
+          description: '新建专题讨论群时的群名称（可选）',
+        },
+        participants: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '可选：需要拉入专题讨论小群的成员 ID 数组',
+        },
+        message: {
+          type: 'string',
+          description: '你在群里发起讨论的开场白与议题（可用 @成员ID 点名谁先发言）',
+        },
+      },
+      required: ['message'],
+      additionalProperties: false,
+    },
+  },
+] as const;
+
+async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  }
+  const raw = Buffer.concat(chunks).toString('utf8').trim();
+  if (!raw) return {};
+  const parsed = JSON.parse(raw) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {};
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function sendJson(res: ServerResponse, status: number, payload: unknown): void {
+  const body = JSON.stringify(payload);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
+/**
+ * 仅绑定 `127.0.0.1:0` 且强制随机密钥鉴权的本地「家庭手机」MCP 总线。
+ * 同时支持：
+ * 1. Streamable HTTP MCP (`/mcp?scopeId=...&callerId=...`) —— 供 Claude Code 与 OpenCode ACP 零子进程直连；
+ * 2. Stdio MCP 代理 (`dist/phone-mcp.js`) —— 供 Codex app-server 等 stdio MCP 客户端接入。
+ */
+export class FamilyPhoneBus {
+  private readonly hub: FamilyHub;
+  private readonly token: string;
+  private server: Server | null = null;
+  private port = 0;
+
+  public constructor(hub: FamilyHub) {
+    this.hub = hub;
+    this.token = randomBytes(32).toString('hex');
+  }
+
+  public async start(): Promise<number> {
+    if (this.server && this.port > 0) {
+      return this.port;
+    }
+
+    const srv = createServer((req, res) => {
+      void this.handleRequest(req, res);
+    });
+
+    await new Promise<void>((resolveListen, rejectListen) => {
+      srv.once('error', rejectListen);
+      srv.listen(0, '127.0.0.1', () => {
+        srv.removeListener('error', rejectListen);
+        resolveListen();
+      });
+    });
+
+    const addr = srv.address() as AddressInfo;
+    this.server = srv;
+    this.port = addr.port;
+    return this.port;
+  }
+
+  public async stop(): Promise<void> {
+    if (!this.server) return;
+    const srv = this.server;
+    this.server = null;
+    this.port = 0;
+    await new Promise<void>((resolveClose) => {
+      srv.close(() => resolveClose());
+    });
+  }
+
+  public buildLaunchSpec(scopeId: string, callerId: string): PhoneMcpLaunchSpec {
+    const baseUrl = `http://127.0.0.1:${this.port}`;
+    const query = new URLSearchParams({ scopeId, callerId }).toString();
+    const httpUrl = `${baseUrl}/mcp?${query}`;
+
+    const distStdio = resolve(import.meta.dirname, '../../dist/phone-mcp.js');
+    const srcStdio = resolve(import.meta.dirname, './phone-mcp-stdio.ts');
+    const scriptPath = existsSync(distStdio) ? distStdio : srcStdio;
+
+    return {
+      command: process.execPath,
+      args: [scriptPath],
+      env: {
+        DSH_FAMILY_BUS_URL: baseUrl,
+        DSH_FAMILY_BUS_TOKEN: this.token,
+        DSH_FAMILY_SCOPE_ID: scopeId,
+        DSH_FAMILY_CALLER_ID: callerId,
+      },
+      httpUrl,
+      bearerToken: this.token,
+    };
+  }
+
+  public static getToolSchemas(): typeof PHONE_TOOL_SCHEMAS {
+    return PHONE_TOOL_SCHEMAS;
+  }
+
+  private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const authHeader = req.headers.authorization ?? '';
+    if (authHeader !== `Bearer ${this.token}`) {
+      sendJson(res, 401, { error: 'Unauthorized family-phone request' });
+      return;
+    }
+
+    const parsedUrl = new URL(req.url ?? '/', `http://127.0.0.1:${this.port}`);
+    if (parsedUrl.pathname !== '/mcp') {
+      sendJson(res, 404, { error: 'Not Found' });
+      return;
+    }
+
+    if (req.method === 'GET') {
+      // Streamable HTTP MCP 探测支持
+      res.writeHead(405, { Allow: 'POST' });
+      res.end();
+      return;
+    }
+
+    if (req.method !== 'POST') {
+      res.writeHead(405, { Allow: 'POST' });
+      res.end();
+      return;
+    }
+
+    const scopeId = parsedUrl.searchParams.get('scopeId') || 'default';
+    const callerId = parsedUrl.searchParams.get('callerId') || 'unknown';
+
+    let rpc: Record<string, unknown>;
+    try {
+      rpc = await readJsonBody(req);
+    } catch {
+      sendJson(res, 400, {
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32700, message: 'Parse error' },
+      });
+      return;
+    }
+
+    const id = typeof rpc.id === 'string' || typeof rpc.id === 'number' ? rpc.id : null;
+    const method = typeof rpc.method === 'string' ? rpc.method : '';
+
+    // JSON-RPC Notification（无需响应体）
+    if (id === null && method.startsWith('notifications/')) {
+      res.writeHead(202);
+      res.end();
+      return;
+    }
+
+    if (method === 'initialize') {
+      sendJson(res, 200, {
+        jsonrpc: '2.0',
+        id,
+        result: {
+          protocolVersion: '2024-11-05',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'dsh-family-phone', version: '0.1.0' },
+        },
+      });
+      return;
+    }
+
+    if (method === 'ping') {
+      sendJson(res, 200, { jsonrpc: '2.0', id, result: {} });
+      return;
+    }
+
+    if (method === 'tools/list') {
+      sendJson(res, 200, {
+        jsonrpc: '2.0',
+        id,
+        result: { tools: PHONE_TOOL_SCHEMAS },
+      });
+      return;
+    }
+
+    if (method === 'tools/call') {
+      const params =
+        rpc.params && typeof rpc.params === 'object'
+          ? (rpc.params as Record<string, unknown>)
+          : {};
+      const toolName = typeof params.name === 'string' ? params.name : '';
+      const rawArgs =
+        params.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments)
+          ? (params.arguments as Record<string, unknown>)
+          : {};
+
+      try {
+        const text = await this.dispatchToolCall(scopeId, callerId, toolName, rawArgs);
+        sendJson(res, 200, {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            content: [{ type: 'text', text }],
+            isError: false,
+          },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        sendJson(res, 200, {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            content: [{ type: 'text', text: `家庭手机调用异常: ${msg}` }],
+            isError: true,
+          },
+        });
+      }
+      return;
+    }
+
+    sendJson(res, 200, {
+      jsonrpc: '2.0',
+      id,
+      error: { code: -32601, message: `Unsupported MCP method: ${method}` },
+    });
+  }
+
+  private async dispatchToolCall(
+    scopeId: string,
+    callerId: string,
+    toolName: string,
+    args: Record<string, unknown>
+  ): Promise<string> {
+    if (toolName === 'phone_contacts') {
+      return this.hub.handlePhoneContacts(scopeId, callerId);
+    }
+
+    if (toolName === 'phone_call') {
+      const to = typeof args.to === 'string' ? args.to : '';
+      const message = typeof args.message === 'string' ? args.message : '';
+      const rawIntent = typeof args.intent === 'string' ? args.intent : 'discuss';
+      const intent: PhoneCallIntent =
+        rawIntent === 'request_help' || rawIntent === 'sync' ? rawIntent : 'discuss';
+      if (!to.trim() || !message.trim()) {
+        return '参数缺失：phone_call 需要提供目标成员 to 与通话内容 message。';
+      }
+      return this.hub.handlePhoneCall({
+        scopeId,
+        callerId,
+        toMemberId: to,
+        intent,
+        message,
+      });
+    }
+
+    if (toolName === 'phone_group_discuss') {
+      const message = typeof args.message === 'string' ? args.message : '';
+      if (!message.trim()) {
+        return '参数缺失：phone_group_discuss 需要提供开场消息 message。';
+      }
+      const groupId = typeof args.groupId === 'string' ? args.groupId : undefined;
+      const title = typeof args.title === 'string' ? args.title : undefined;
+      const participants = Array.isArray(args.participants)
+        ? args.participants.filter((p): p is string => typeof p === 'string')
+        : undefined;
+      return this.hub.handlePhoneGroupDiscuss({
+        scopeId,
+        callerId,
+        groupId,
+        title,
+        participants,
+        message,
+      });
+    }
+
+    throw new Error(`未知的家庭手机功能: ${toolName}`);
+  }
+}

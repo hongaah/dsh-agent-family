@@ -1,4 +1,4 @@
-# `@ugreen/dsh-family`（智能体家庭）设计规格书
+# `dsh-agent-family`（智能体家庭）设计规格书
 
 - **日期**：2026-11-17
 - **目标宿主**：DeepSeek Harness（Desktop & Web Profile，`>=0.1.7-rc.1` / `0.2.x`）
@@ -10,7 +10,7 @@
 
 市面上主流的编程智能体 CLI（`Claude Code`、`Codex`、`OpenCode` 以及 `DeepSeek Harness` 自身）各自拥有成熟的推理能力、工具生态、上下文记忆与安全权限机制。但在日常开发中，它们彼此孤立，且缺乏稳定的角色人格与跨智能体自主沟通渠道。
 
-`@ugreen/dsh-family` 将这些 CLI 组织为一个像真人团队一样运作的**智能体家庭（Agents Family）**，严格遵循以下四条核心原则：
+`dsh-agent-family` 将这些 CLI 组织为一个像真人团队一样运作的**智能体家庭（Agents Family）**，严格遵循以下四条核心原则：
 
 1. **身体与灵魂解耦（`1 CLI : N Members`）**
    - **身体（Body）**：本机安装的 `claude`、`codex`、`opencode` 或宿主 `dsh` 自身。同一具身体可被任意多个家庭成员复用。

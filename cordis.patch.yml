@@ -1,0 +1,4 @@
+# dsh-agent-family bundle patch: 在 DeepSeek Harness 配置树中挂载「智能体家庭」插件
+- insert:
+    - id: dsh-agent-family
+      name: 'dsh-agent-family'

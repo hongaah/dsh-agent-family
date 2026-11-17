@@ -1,0 +1,184 @@
+/**
+ * DeepSeek Harness (Cordis) 宿主最小类型面声明。
+ * 严格遵循零 `any` 约束，所有动态边界均使用显式接口或 `unknown` 收窄。
+ */
+
+export interface DshHttpRequest {
+  url?: string;
+  method?: string;
+  headers: Record<string, string | string[] | undefined>;
+  on?(event: 'close' | 'error', listener: () => void): void;
+  [Symbol.asyncIterator](): AsyncIterator<string | Uint8Array>;
+}
+
+export interface DshHttpResponse extends NodeJS.WritableStream {
+  statusCode: number;
+  headersSent?: boolean;
+  writeHead(status: number, headers?: Record<string, string>): void;
+  write(chunk: string | Uint8Array): boolean;
+  destroy(error?: Error): this;
+  readonly writableEnded?: boolean;
+  flushHeaders?(): void;
+}
+
+export interface DshWebRoute {
+  readonly kind: 'exact' | 'prefix';
+  readonly path: string;
+  readonly handler: (req: DshHttpRequest, res: DshHttpResponse) => void | Promise<void>;
+}
+
+export interface DshWebServer {
+  register(route: DshWebRoute): () => void;
+}
+
+export interface DshConnectionService {
+  requestRejection?(request: {
+    headers: Record<string, string | string[] | undefined>;
+  }): 401 | 403 | undefined;
+}
+
+export interface DshSessionHandle {
+  readonly id?: string;
+  readonly header: { readonly cwd?: string } & Record<string, unknown>;
+}
+
+export interface DshHostSessionStore {
+  get(id: string): DshSessionHandle | undefined;
+}
+
+export interface DshWorkingDirectoryService {
+  readonly defaultDirectory?: string;
+  get(session: DshSessionHandle): string | undefined;
+}
+
+export interface DshAgentLike {
+  readonly session: DshSessionHandle & { readonly id: string };
+  readonly ctx?: DshHostContext;
+}
+
+export interface DshAgentsRegistry {
+  get?(sessionId: string): DshAgentLike | undefined;
+}
+
+export interface DshContentTextBlock {
+  readonly type: 'text';
+  readonly text: string;
+}
+
+export interface DshSubagentResult {
+  readonly output: ReadonlyArray<{ readonly type: string; readonly text?: string }>;
+  readonly diagnostic?: string;
+  readonly stopReason: string;
+}
+
+export interface DshSubagentActivation {
+  readonly childId: string;
+  readonly name: string;
+  readonly result: Promise<DshSubagentResult>;
+  dispose(): Promise<void>;
+}
+
+export interface DshSubagentRuntime {
+  startActivation(spec: {
+    readonly provider: string;
+    readonly label: string;
+    readonly name?: string;
+    readonly cwd?: string;
+    readonly prompt: readonly DshContentTextBlock[];
+    readonly parent: DshAgentLike;
+    readonly signal: AbortSignal;
+    readonly delivery: 'parent' | 'caller';
+  }): Promise<DshSubagentActivation>;
+  sendMessage?(
+    sender: DshAgentLike,
+    targetId: string,
+    content: readonly DshContentTextBlock[],
+    options: { readonly signal: AbortSignal }
+  ): Promise<string>;
+}
+
+export interface DshToolRunContext {
+  readonly callId: string;
+  readonly name: string;
+  readonly arguments: unknown;
+  readonly signal: AbortSignal;
+  readonly agent?: DshAgentLike;
+}
+
+export interface DshRawToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Record<string, unknown>;
+  readonly output: {
+    readonly schema: Record<string, unknown>;
+    readonly render: (args: unknown, value: unknown) => DshContentTextBlock[];
+    readonly presentationMeta?: (args: unknown, value: unknown) => unknown;
+  };
+  readonly execute: (args: Record<string, unknown>, exec: DshToolRunContext) => Promise<unknown>;
+}
+
+export interface DshToolsRegistry {
+  register(
+    tool: DshRawToolDefinition,
+    options?: { readonly when: () => boolean | Promise<boolean> }
+  ): () => void;
+}
+
+export interface DshSystemPromptService {
+  section(spec: {
+    readonly name: string;
+    readonly order?: number;
+    readonly text: () => string;
+  }): () => void;
+}
+
+export interface DshPreStepMessage {
+  readonly id?: string;
+  readonly role?: string;
+  readonly content: Array<{ readonly type: string; readonly text?: string } & Record<string, unknown>>;
+  readonly source?: Record<string, unknown>;
+}
+
+export type DshPreStepDecision =
+  | { readonly kind: 'reject'; readonly reason?: string }
+  | ({ readonly kind: 'enter'; readonly messages: DshPreStepMessage[] } & Record<string, unknown>);
+
+export interface DshPreStepPayload {
+  readonly agent: DshAgentLike;
+  readonly messages: DshPreStepMessage[];
+  readonly step: number;
+  readonly signal: AbortSignal;
+}
+
+export interface DshSubagentEndInfo {
+  readonly id: string;
+  readonly parentSessionId: string;
+  readonly result: DshSubagentResult;
+}
+
+export interface DshHostEventMap {
+  'agent/pre-step': (
+    payload: DshPreStepPayload,
+    next: () => Promise<DshPreStepDecision>
+  ) => Promise<DshPreStepDecision>;
+  'subagent/end': (info: DshSubagentEndInfo) => void;
+}
+
+export interface DshHostContext {
+  readonly webServer?: DshWebServer;
+  readonly sessions: DshHostSessionStore;
+  readonly tools: DshToolsRegistry;
+  readonly systemPrompt?: DshSystemPromptService;
+  readonly logger?: {
+    info(msg: string, ...args: unknown[]): void;
+    warn(msg: string, ...args: unknown[]): void;
+    error(msg: string, ...args: unknown[]): void;
+  };
+  get(name: string): unknown;
+  effect(
+    fn: () => (() => void) | void | Generator<() => void, void, unknown>,
+    label?: string
+  ): () => void;
+  inject(deps: readonly string[], callback: (scoped: DshHostContext) => void | (() => void)): () => void;
+  on<K extends keyof DshHostEventMap>(event: K, listener: DshHostEventMap[K]): () => void;
+}

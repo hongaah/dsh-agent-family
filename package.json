@@ -1,0 +1,72 @@
+{
+  "name": "dsh-agent-family",
+  "version": "0.1.0",
+  "description": "智能体家庭（Agents Family）：为本机 CLI（Claude Code、Codex、OpenCode、DSH）赋予独立灵魂，支持随身家庭手机与群聊自治协作",
+  "type": "module",
+  "icon": "assets/icon.svg",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "dsh-family-phone-mcp": "./dist/phone-mcp.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": "./dist/client.js",
+    "./phone-mcp": "./dist/phone-mcp.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "assets",
+    "cordis.patch.yml",
+    "README.md",
+    "scripts/install-desktop.mjs"
+  ],
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.1.7-rc.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.1-rc.5": "compatible",
+        "0.2.2-rc.1": "compatible",
+        "0.2.2-rc.2": "compatible"
+      }
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "install:desktop": "node ./scripts/install-desktop.mjs",
+    "uninstall:desktop": "node ./scripts/install-desktop.mjs --remove",
+    "prepack": "pnpm run typecheck && pnpm test && pnpm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "esbuild": "^0.25.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.8.2",
+    "vitest": "^3.1.1"
+  }
+}
