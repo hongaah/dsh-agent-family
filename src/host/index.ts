@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 
 import { probeAllBodies } from '../core/cli-locator.ts';
@@ -22,18 +23,19 @@ import { DshNativeDriver, type DshHostBridge } from '../drivers/dsh-native-drive
 import { OpenCodeDriver } from '../drivers/opencode-driver.ts';
 import { FamilyPhoneBus } from '../phone/phone-bus.ts';
 import type {
+  DshAgentDefaultModelService,
   DshAgentLike,
+  DshAgentScopedContext,
   DshAgentsRegistry,
   DshConnectionService,
   DshHostContext,
   DshHttpRequest,
   DshHttpResponse,
+  DshOwnedAgentHandle,
   DshPreStepDecision,
   DshPreStepMessage,
   DshPreStepPayload,
-  DshSubagentEndInfo,
-  DshSubagentResult,
-  DshSubagentRuntime,
+  DshSessionEventRecord,
   DshWorkingDirectoryService,
 } from './dsh-types.ts';
 
@@ -44,6 +46,45 @@ export const API_PREFIX = '/dsh-agent-family/api';
 export interface FamilyHostPluginOptions {
   readonly storageDir?: string;
   readonly customDrivers?: readonly BodyDriver[];
+}
+
+function deepFreezeJson<T>(value: T): T {
+  if (value && typeof value === 'object') {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        deepFreezeJson(item);
+      }
+    } else {
+      for (const item of Object.values(value as Record<string, unknown>)) {
+        deepFreezeJson(item);
+      }
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function extractTextFromMessageBlocks(content: unknown): string {
+  if (!Array.isArray(content)) return '';
+  const parts: string[] = [];
+  for (const item of content) {
+    if (item && typeof item === 'object') {
+      const block = item as Record<string, unknown>;
+      if (block.type === 'text' && typeof block.text === 'string' && block.text) {
+        parts.push(block.text);
+      }
+    }
+  }
+  return parts.join('\n').trim();
+}
+
+function extractAssistantTextFromSessionEvent(event: DshSessionEventRecord): string {
+  if (event.type !== 'assistant/message') return '';
+  const message =
+    event.data.message && typeof event.data.message === 'object'
+      ? (event.data.message as Record<string, unknown>)
+      : {};
+  return extractTextFromMessageBlocks(message.content);
 }
 
 async function resolveSessionCwd(
@@ -94,17 +135,6 @@ function writeJson(res: DshHttpResponse, status: number, body: unknown): void {
   res.end(text);
 }
 
-function extractTextFromDshResult(result: DshSubagentResult): string {
-  const texts = result.output
-    .filter((block) => block.type === 'text' && typeof block.text === 'string')
-    .map((block) => block.text ?? '')
-    .join('\n')
-    .trim();
-  if (texts) return texts;
-  if (result.diagnostic) return `[DSH 诊断]: ${result.diagnostic}`;
-  return '';
-}
-
 function appendHintToLastUserMessage(
   messages: readonly DshPreStepMessage[],
   note: string
@@ -150,6 +180,55 @@ function parseBodySpecFromPayload(raw: unknown): BodySpec | undefined {
   };
 }
 
+function registerScopedPhoneToolsOnDshAgent(
+  agentCtx: DshAgentScopedContext,
+  getHub: () => FamilyHub,
+  scopeId: string,
+  memberId: string
+): void {
+  if (!agentCtx.tools) return;
+  for (const schema of FamilyPhoneBus.getToolSchemas()) {
+    agentCtx.tools.register({
+      name: schema.name,
+      description: schema.description,
+      parameters: schema.inputSchema as unknown as Record<string, unknown>,
+      output: {
+        schema: { type: 'string' },
+        render: (_a, val) => [{ type: 'text', text: String(val ?? '') }],
+      },
+      execute: async (args, exec) => {
+        const hub = getHub();
+        if (schema.name === 'phone_contacts') {
+          return hub.handlePhoneContacts(scopeId, memberId);
+        }
+        if (schema.name === 'phone_call') {
+          const rawIntent = typeof args.intent === 'string' ? args.intent : 'discuss';
+          const intent: PhoneCallIntent =
+            rawIntent === 'request_help' || rawIntent === 'sync' ? rawIntent : 'discuss';
+          return hub.handlePhoneCall({
+            scopeId,
+            callerId: memberId,
+            toMemberId: String(args.to ?? ''),
+            intent,
+            message: String(args.message ?? ''),
+            signal: exec.signal,
+          });
+        }
+        return hub.handlePhoneGroupDiscuss({
+          scopeId,
+          callerId: memberId,
+          groupId: typeof args.groupId === 'string' ? args.groupId : undefined,
+          title: typeof args.title === 'string' ? args.title : undefined,
+          participants: Array.isArray(args.participants)
+            ? args.participants.filter((p): p is string => typeof p === 'string')
+            : undefined,
+          message: String(args.message ?? ''),
+        });
+      },
+    });
+  }
+}
+
 export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
   return {
     name,
@@ -157,85 +236,209 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
     apply(ctx: DshHostContext): void {
       const registry = new MemberRegistry(options.storageDir ?? defaultFamilyStorageDir());
       const observedAgents = new Map<string, DshAgentLike>();
-      const dshChildSessions = new Map<string, { scopeId: string; memberId: string }>();
-      const activeDshChildren = new Map<string, string>();
-      const subagentEndWaiters = new Map<
-        string,
-        { resolve: (text: string) => void; reject: (err: Error) => void }
-      >();
+      const managedDshHandles = new Map<string, DshOwnedAgentHandle>();
 
-      const findLiveParentAgent = (scopeId: string): DshAgentLike | undefined => {
-        const cached = observedAgents.get(scopeId);
-        if (cached) return cached;
+      const hasNativeDshAgents = (): boolean => {
         const agentsSvc = ctx.get('agents') as DshAgentsRegistry | undefined;
-        const lookedUp = agentsSvc?.get?.(scopeId);
-        if (lookedUp) return lookedUp;
-        for (const candidate of observedAgents.values()) {
-          return candidate;
+        return typeof agentsSvc?.create === 'function';
+      };
+
+      const resolveDshModelRoute = (scopeId: string) => {
+        const observed = observedAgents.get(scopeId);
+        const agentsSvc = ctx.get('agents') as DshAgentsRegistry | undefined;
+        const liveSessionAgent = observed ?? agentsSvc?.get?.(scopeId);
+        const sessionRoute = liveSessionAgent?.model?.current?.();
+        if (sessionRoute?.provider && sessionRoute.model) {
+          return sessionRoute;
+        }
+        const defaultSvc = ctx.get('agentDefaultModel') as DshAgentDefaultModelService | undefined;
+        const defaultRoute = defaultSvc?.currentSelection?.();
+        if (defaultRoute?.provider && defaultRoute.model) {
+          return defaultRoute;
         }
         return undefined;
       };
 
+      let hubRef: FamilyHub | null = null;
+
       const dshBridge: DshHostBridge = {
-        isAvailable: () => Boolean(ctx.get('subagents')),
-        runTurn: async ({ scopeId, member, composedSoul, cwd, prompt, isFirstTurn, signal }) => {
-          const subagents = ctx.get('subagents') as DshSubagentRuntime | undefined;
-          const parent = findLiveParentAgent(scopeId);
-          if (!subagents || !parent) {
-            throw new Error(
-              '当前暂无活跃的 DSH 父级会话句柄以唤醒进程内子代理；请先在主对话发起任意轮次，或为该成员绑定本地 claude/codex/opencode 身体。'
-            );
+        isAvailable: () => hasNativeDshAgents(),
+        runTurn: async ({
+          scopeId,
+          member,
+          composedSoul,
+          cwd,
+          prompt,
+          signal,
+          onDelta,
+          onStatus,
+        }) => {
+          const agentsSvc = ctx.get('agents') as DshAgentsRegistry | undefined;
+          if (typeof agentsSvc?.create !== 'function') {
+            throw new Error('当前宿主未暴露 ctx.agents.create 原生会话工厂。');
           }
 
           const key = `${scopeId}::${member.id}`;
-          const existingChildId = !isFirstTurn ? activeDshChildren.get(key) : undefined;
+          let handle = managedDshHandles.get(key);
 
-          if (existingChildId && subagents.sendMessage) {
-            const waitEnd = new Promise<string>((resolveEnd, rejectEnd) => {
-              subagentEndWaiters.set(existingChildId, { resolve: resolveEnd, reject: rejectEnd });
-              signal.addEventListener(
-                'abort',
-                () => {
-                  subagentEndWaiters.delete(existingChildId);
-                  rejectEnd(new Error('DSH 子成员轮次已被中断。'));
-                },
-                { once: true }
-              );
+          if (!handle) {
+            const route = resolveDshModelRoute(scopeId);
+            const sessionId = `family-${member.id}-${randomUUID().slice(0, 8)}`;
+            handle = await agentsSvc.create({
+              sessionId,
+              meta: { cwd },
+              agentOptions: route
+                ? {
+                    provider: route.provider,
+                    model: route.model,
+                    ...(route.reasoningEffort ? { reasoningEffort: route.reasoningEffort } : {}),
+                  }
+                : {},
+              signal,
+              setup: (agentCtx) => {
+                // 使用 agent 作用域的 deployment:persona-prefix 注入成员灵魂，遮蔽通用默认人设
+                agentCtx.systemPrompt?.section({
+                  name: 'deployment:persona-prefix',
+                  text: () => composedSoul,
+                });
+                if (hubRef) {
+                  const boundHub = hubRef;
+                  registerScopedPhoneToolsOnDshAgent(agentCtx, () => boundHub, scopeId, member.id);
+                }
+              },
             });
-            await subagents.sendMessage(
-              parent,
-              existingChildId,
-              [{ type: 'text', text: prompt }],
-              { signal }
-            );
-            return waitEnd;
+            managedDshHandles.set(key, handle);
           }
 
-          const framedPrompt = `${composedSoul}\n\n---\n\n${prompt}`;
-          const activation = await subagents.startActivation({
-            provider: 'spawn',
-            label: `${member.avatar} ${member.name}`,
-            name: member.id,
-            cwd,
-            prompt: [{ type: 'text', text: framedPrompt }],
-            parent,
-            signal,
-            delivery: 'caller',
+          const ownedAgent = handle.agent;
+          const startSeq = ownedAgent.session.seq ?? 0;
+
+          return new Promise<string>((resolveTurn, rejectTurn) => {
+            let settled = false;
+            let lastAssistantText = '';
+            let streamedFallback = '';
+
+            const unsubStream = ownedAgent.ctx.on('agent/assistant-stream', ({ frame }) => {
+              if (settled) return;
+              if (frame.type === 'chunk' && frame.chunk && typeof frame.chunk === 'object') {
+                const chunk = frame.chunk as Record<string, unknown>;
+                const delta =
+                  typeof chunk.delta === 'string'
+                    ? chunk.delta
+                    : typeof chunk.text === 'string'
+                      ? chunk.text
+                      : '';
+                if (delta) {
+                  streamedFallback += delta;
+                  onDelta?.(delta);
+                }
+              }
+            });
+
+            const unsubSession = ownedAgent.ctx.on('session/event', (sess, event) => {
+              if (settled) return;
+              if (sess.id !== ownedAgent.session.id || event.seq <= startSeq) return;
+
+              if (event.type === 'tool/call') {
+                onStatus?.(`调用工具 ${String(event.data.name ?? '')}`);
+                return;
+              }
+
+              if (event.type === 'assistant/message') {
+                const extracted = extractAssistantTextFromSessionEvent(event);
+                if (extracted) {
+                  lastAssistantText = extracted;
+                }
+                return;
+              }
+
+              if (event.type === 'turn/end') {
+                const reason =
+                  event.data.reason && typeof event.data.reason === 'object'
+                    ? (event.data.reason as Record<string, unknown>)
+                    : {};
+                if (reason.kind === 'aborted') {
+                  finishWithError(new Error('DSH 成员轮次已被中断。'));
+                  return;
+                }
+                if (reason.kind === 'error') {
+                  finishWithError(
+                    new Error(
+                      typeof reason.message === 'string'
+                        ? reason.message
+                        : 'DSH 模型执行返回错误'
+                    )
+                  );
+                  return;
+                }
+
+                if (!lastAssistantText && ownedAgent.session.snapshotEvents) {
+                  for (const past of ownedAgent.session.snapshotEvents(startSeq + 1)) {
+                    const txt = extractAssistantTextFromSessionEvent(past);
+                    if (txt) lastAssistantText = txt;
+                  }
+                }
+                finishWithSuccess(lastAssistantText || streamedFallback);
+              }
+            });
+
+            const unsubError = ownedAgent.ctx.on('agent/error', ({ error }) => {
+              if (settled) return;
+              finishWithError(error instanceof Error ? error : new Error(String(error)));
+            });
+
+            const onAbort = () => {
+              if (settled) return;
+              ownedAgent.cancel?.({ kind: 'user' });
+              finishWithError(new Error('DSH 成员轮次已被中断。'));
+            };
+
+            function cleanup(): void {
+              signal.removeEventListener('abort', onAbort);
+              unsubStream();
+              unsubSession();
+              unsubError();
+            }
+
+            function finishWithSuccess(text: string): void {
+              if (settled) return;
+              settled = true;
+              cleanup();
+              resolveTurn(text);
+            }
+
+            function finishWithError(err: Error): void {
+              if (settled) return;
+              settled = true;
+              cleanup();
+              rejectTurn(err);
+            }
+
+            if (signal.aborted) {
+              onAbort();
+              return;
+            }
+            signal.addEventListener('abort', onAbort, { once: true });
+
+            try {
+              const userMsg = deepFreezeJson({
+                id: randomUUID(),
+                role: 'user',
+                content: [{ type: 'text', text: prompt }],
+                source: { kind: 'user' },
+              });
+              ownedAgent.followup(userMsg);
+            } catch (err) {
+              finishWithError(err instanceof Error ? err : new Error(String(err)));
+            }
           });
-          activeDshChildren.set(key, activation.childId);
-          dshChildSessions.set(activation.childId, { scopeId, memberId: member.id });
-          const res = await activation.result;
-          if (res.stopReason === 'error' || res.stopReason === 'aborted') {
-            throw new Error(res.diagnostic || `DSH 子成员执行终止 (${res.stopReason})`);
-          }
-          return extractTextFromDshResult(res);
         },
         disposeMember: async (scopeId, memberId) => {
           const key = `${scopeId}::${memberId}`;
-          const childId = activeDshChildren.get(key);
-          if (childId) {
-            activeDshChildren.delete(key);
-            dshChildSessions.delete(childId);
+          const existing = managedDshHandles.get(key);
+          if (existing) {
+            managedDshHandles.delete(key);
+            await existing.dispose().catch(() => undefined);
           }
         },
       };
@@ -251,6 +454,7 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
         registry,
         drivers: options.customDrivers ?? defaultDrivers,
       });
+      hubRef = hub;
       const groupEngine = new GroupChatEngine(hub, registry);
       hub.attachGroupEngine(groupEngine);
 
@@ -260,25 +464,7 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
       });
       hub.attachPhoneBus(phoneBus);
 
-      // 监听 DSH 原生子代理完成事件以结算多轮 sendMessage
-      ctx.effect(
-        () =>
-          ctx.on('subagent/end', (info: DshSubagentEndInfo) => {
-            const waiter = subagentEndWaiters.get(info.id);
-            if (!waiter) return;
-            subagentEndWaiters.delete(info.id);
-            if (info.result.stopReason === 'error' || info.result.stopReason === 'aborted') {
-              waiter.reject(
-                new Error(info.result.diagnostic || `DSH 成员结束 (${info.result.stopReason})`)
-              );
-            } else {
-              waiter.resolve(extractTextFromDshResult(info.result));
-            }
-          }),
-        'dsh-agent-family: subagent-end-observer'
-      );
-
-      // 插件卸载或宿主退出时全量优雅释放所有 CLI 身体进程与手机总线
+      // 插件卸载或宿主退出时全量优雅释放所有 CLI 身体进程、原生 DSH 句柄与手机总线
       const sseClients = new Set<DshHttpResponse>();
       ctx.effect(() => {
         const unsubHub = hub.subscribe((ev: FamilyRealtimeEvent) => {
@@ -310,6 +496,10 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
           }
           sseClients.clear();
           void hub.dispose();
+          for (const [, h] of managedDshHandles) {
+            void h.dispose().catch(() => undefined);
+          }
+          managedDshHandles.clear();
           void phoneBus.stop();
         };
       }, 'dsh-agent-family: lifecycle-cleanup');
@@ -348,8 +538,8 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
         );
       });
 
-      // 2. 注册面向主对话 Lead（以及 DSH 原生子成员）的工具集
-      registerFamilyTools(ctx, hub, groupEngine, registry, observedAgents, dshChildSessions);
+      // 2. 注册面向主对话 Lead 的工具集
+      registerFamilyTools(ctx, hub, groupEngine, registry, observedAgents, hasNativeDshAgents);
 
       // 3. 拦截 agent/pre-step：缓存活跃父 Agent，并识别用户输入中的 @成员ID 点名
       ctx.effect(
@@ -432,6 +622,7 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
                   hub,
                   groupEngine,
                   sseClients,
+                  hasNativeDshAgents,
                 });
               },
             }),
@@ -448,9 +639,8 @@ function registerFamilyTools(
   groupEngine: GroupChatEngine,
   registry: MemberRegistry,
   observedAgents: Map<string, DshAgentLike>,
-  dshChildSessions: Map<string, { scopeId: string; memberId: string }>
+  hasNativeDshAgents: () => boolean
 ): void {
-  // 工具 1: family_assign（单人或多人并发指派工作）
   ctx.effect(
     () =>
       ctx.tools.register({
@@ -587,7 +777,6 @@ function registerFamilyTools(
     'dsh-agent-family: tool-assign'
   );
 
-  // 工具 2: family_group_discuss（发起多轮家庭群聊讨论）
   ctx.effect(
     () =>
       ctx.tools.register({
@@ -697,7 +886,6 @@ function registerFamilyTools(
     'dsh-agent-family: tool-group-discuss'
   );
 
-  // 工具 3: family_status（查询家庭成员与审批状态）
   ctx.effect(
     () =>
       ctx.tools.register({
@@ -714,7 +902,7 @@ function registerFamilyTools(
         },
         execute: async (_args, exec) => {
           const scopeId = exec.agent?.session?.id ?? 'default';
-          const bodies = await probeAllBodies({ hasDshHostRuntime: Boolean(ctx.get('subagents')) });
+          const bodies = await probeAllBodies({ hasDshHostRuntime: hasNativeDshAgents() });
           return {
             members: registry.list(),
             bodies,
@@ -726,7 +914,6 @@ function registerFamilyTools(
     'dsh-agent-family: tool-status'
   );
 
-  // 工具 4: family_interrupt（中断指定成员或暂停群聊接龙）
   ctx.effect(
     () =>
       ctx.tools.register({
@@ -759,61 +946,6 @@ function registerFamilyTools(
       }),
     'dsh-agent-family: tool-interrupt'
   );
-
-  // 为 DSH 自身进程内子代理动态暴露随身手机工具（仅对登记在 dshChildSessions 中的子代理工作）
-  for (const schema of FamilyPhoneBus.getToolSchemas()) {
-    ctx.effect(
-      () =>
-        ctx.tools.register(
-          {
-            name: schema.name,
-            description: schema.description,
-            parameters: schema.inputSchema as unknown as Record<string, unknown>,
-            output: {
-              schema: { type: 'string' },
-              render: (_a, val) => [{ type: 'text', text: String(val ?? '') }],
-            },
-            execute: async (args, exec) => {
-              const childSessionId = exec.agent?.session?.id ?? '';
-              const owner = dshChildSessions.get(childSessionId);
-              if (!owner) {
-                return '此随身手机工具仅供已唤醒的家庭成员内部调用；主对话请使用 family_assign 或 family_group_discuss。';
-              }
-              if (schema.name === 'phone_contacts') {
-                return hub.handlePhoneContacts(owner.scopeId, owner.memberId);
-              }
-              if (schema.name === 'phone_call') {
-                const rawIntent = typeof args.intent === 'string' ? args.intent : 'discuss';
-                const intent: PhoneCallIntent =
-                  rawIntent === 'request_help' || rawIntent === 'sync' ? rawIntent : 'discuss';
-                return hub.handlePhoneCall({
-                  scopeId: owner.scopeId,
-                  callerId: owner.memberId,
-                  toMemberId: String(args.to ?? ''),
-                  intent,
-                  message: String(args.message ?? ''),
-                  signal: exec.signal,
-                });
-              }
-              return hub.handlePhoneGroupDiscuss({
-                scopeId: owner.scopeId,
-                callerId: owner.memberId,
-                groupId: typeof args.groupId === 'string' ? args.groupId : undefined,
-                title: typeof args.title === 'string' ? args.title : undefined,
-                participants: Array.isArray(args.participants)
-                  ? args.participants.filter((p): p is string => typeof p === 'string')
-                  : undefined,
-                message: String(args.message ?? ''),
-              });
-            },
-          },
-          {
-            when: () => dshChildSessions.size > 0,
-          }
-        ),
-      `dsh-agent-family: dsh-child-${schema.name}`
-    );
-  }
 }
 
 async function handleWebApiRequest(params: {
@@ -824,8 +956,9 @@ async function handleWebApiRequest(params: {
   readonly hub: FamilyHub;
   readonly groupEngine: GroupChatEngine;
   readonly sseClients: Set<DshHttpResponse>;
+  readonly hasNativeDshAgents: () => boolean;
 }): Promise<void> {
-  const { ctx, req, res, registry, hub, groupEngine, sseClients } = params;
+  const { ctx, req, res, registry, hub, groupEngine, sseClients, hasNativeDshAgents } = params;
   const url = new URL(req.url ?? '/', 'http://127.0.0.1');
   const subPath = url.pathname.slice(API_PREFIX.length) || '/';
   const method = (req.method ?? 'GET').toUpperCase();
@@ -848,7 +981,7 @@ async function handleWebApiRequest(params: {
 
     if (method === 'GET' && subPath === '/bootstrap') {
       const scopeId = url.searchParams.get('scopeId') || 'default';
-      const bodies = await probeAllBodies({ hasDshHostRuntime: Boolean(ctx.get('subagents')) });
+      const bodies = await probeAllBodies({ hasDshHostRuntime: hasNativeDshAgents() });
       writeJson(res, 200, {
         members: registry.list(),
         templates: STARTER_MEMBER_TEMPLATES,
@@ -862,7 +995,7 @@ async function handleWebApiRequest(params: {
     }
 
     if (method === 'POST' && subPath === '/probe') {
-      const bodies = await probeAllBodies({ hasDshHostRuntime: Boolean(ctx.get('subagents')) });
+      const bodies = await probeAllBodies({ hasDshHostRuntime: hasNativeDshAgents() });
       writeJson(res, 200, { bodies });
       return;
     }

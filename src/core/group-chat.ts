@@ -202,7 +202,14 @@ export class GroupChatEngine {
 
         // 标记该成员已读到当前群消息末尾
         room.readCursors[speaker.id] = room.messages.length;
-        const promptForSpeaker = this.formatUnreadGroupDelta(room, speaker, unreadMessages, activeMembers);
+        const allowPass = substantiveTurns > 0 || speakerQueue.length > 0;
+        const promptForSpeaker = this.formatUnreadGroupDelta(
+          room,
+          speaker,
+          unreadMessages,
+          activeMembers,
+          allowPass
+        );
 
         let replyText = '';
         try {
@@ -300,7 +307,8 @@ export class GroupChatEngine {
     room: MutableGroupRoom,
     receiver: FamilyMember,
     unread: readonly GroupMessage[],
-    roomMembers: readonly FamilyMember[]
+    roomMembers: readonly FamilyMember[],
+    allowPass: boolean
   ): string {
     const peersDesc = roomMembers
       .filter((m) => m.id !== receiver.id)
@@ -314,6 +322,10 @@ export class GroupChatEngine {
       })
       .join('\n\n');
 
+    const passGuideline = allowPass
+      ? `4. 若前面成员已经说得很完善、当前不需要你插话，请只回复 \`[PASS]\` 保持安静旁听。`
+      : `4. 当前本轮还没有其他成员回应，请直接自然回应群内消息，不要回复 \`[PASS]\`。`;
+
     return [
       `👥 【家庭群聊「${room.title}」未读新消息】`,
       `群内其他在岗成员：${peersDesc || '暂无其他成员'}`,
@@ -324,7 +336,7 @@ export class GroupChatEngine {
       `1. 你现在正拿着群聊话筒，回复内容将直接发到「${room.title}」群里，无需再调用 phone_group_discuss 工具；`,
       `2. 请结合你的专长（${receiver.specialty}）直接发表具体方案、认领动作、指出前面成员方案的问题或明确拒绝不合理诉求；`,
       `3. 若需要群里某位成员接着表态或配合，请在回复中用 \`@成员ID\` 点名 TA；`,
-      `4. 若前面成员已经说得很完善、当前不需要你插话，请只回复 \`[PASS]\` 保持安静旁听。`,
+      passGuideline,
     ].join('\n');
   }
 

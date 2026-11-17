@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { resolve } from 'node:path';
 
+import { resolveNodeExecutable } from '../core/cli-locator.ts';
 import type { FamilyHub } from '../core/family-hub.ts';
 import type { PhoneCallIntent, PhoneMcpLaunchSpec } from '../core/types.ts';
 
@@ -155,11 +156,15 @@ export class FamilyPhoneBus {
     const distStdio = resolve(import.meta.dirname, '../../dist/phone-mcp.js');
     const srcStdio = resolve(import.meta.dirname, './phone-mcp-stdio.ts');
     const scriptPath = existsSync(distStdio) ? distStdio : srcStdio;
+    const nodeExec = resolveNodeExecutable();
 
     return {
-      command: process.execPath,
+      command: nodeExec.command,
       args: [scriptPath],
       env: {
+        ...nodeExec.env,
+        NO_PROXY: '127.0.0.1,localhost,::1',
+        no_proxy: '127.0.0.1,localhost,::1',
         DSH_FAMILY_BUS_URL: baseUrl,
         DSH_FAMILY_BUS_TOKEN: this.token,
         DSH_FAMILY_SCOPE_ID: scopeId,

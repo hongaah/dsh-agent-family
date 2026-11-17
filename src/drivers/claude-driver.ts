@@ -43,8 +43,10 @@ export class ClaudeDriver implements BodyDriver {
       '--output-format',
       'stream-json',
       '--include-partial-messages',
-      '--permission-prompts',
-      'host',
+      '--permission-prompt-tool',
+      'stdio',
+      '--allowedTools',
+      'mcp__family_phone__*',
       '--append-system-prompt',
       context.composedSoul,
       '--mcp-config',
@@ -63,6 +65,15 @@ export class ClaudeDriver implements BodyDriver {
       onLine: (frame) => {
         if (!activeQueue) return;
         const frameType = typeof frame.type === 'string' ? frame.type : '';
+
+        if (frameType === 'system' && frame.subtype === 'thinking_tokens') {
+          const tokens = typeof frame.estimated_tokens === 'number' ? frame.estimated_tokens : 0;
+          activeQueue.push({
+            kind: 'status',
+            summary: tokens > 0 ? `深度思考中 (${tokens} tokens)…` : '深度思考中…',
+          });
+          return;
+        }
 
         if (frameType === 'stream_event' && frame.event && typeof frame.event === 'object') {
           const ev = frame.event as Record<string, unknown>;

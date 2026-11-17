@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import { resolveNodeExecutable } from './cli-locator.ts';
 import type { MemberRegistry } from './member-registry.ts';
 import { composeAwakeningSoul } from './soul-composer.ts';
 import type {
@@ -615,10 +616,14 @@ export class FamilyHub {
       return this.phoneBus.buildLaunchSpec(scopeId, callerId);
     }
     const fallbackScript = resolve(import.meta.dirname, '../../dist/phone-mcp.js');
+    const nodeExec = resolveNodeExecutable();
     return {
-      command: process.execPath,
+      command: nodeExec.command,
       args: [existsSync(fallbackScript) ? fallbackScript : ''],
       env: {
+        ...nodeExec.env,
+        NO_PROXY: '127.0.0.1,localhost,::1',
+        no_proxy: '127.0.0.1,localhost,::1',
         DSH_FAMILY_SCOPE_ID: scopeId,
         DSH_FAMILY_CALLER_ID: callerId,
       },

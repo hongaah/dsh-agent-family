@@ -274,4 +274,195 @@ describe('Cordis Host Plugin (Tools, SystemPrompt, @Mention Pre-Step, Web API & 
     const rejectedRes = await fetch(`${base}/dsh-agent-family/api/bootstrap`);
     expect(rejectedRes.status).toBe(401);
   });
+
+  it('drives in-process DSH body (ctx.agents.create + followup + session/event) across Turn 1, aborted Turn 2, and Turn 3 without hanging', async () => {
+    const sessionEventListeners: Array<(session: { id: string }, event: { seq: number; type: string; data: Record<string, unknown> }) => void> = [];
+    const streamListeners: Array<(payload: { frame: Record<string, unknown> }) => void> = [];
+    let seq = 0;
+    let turnNo = 0;
+    const storedEvents: Array<{ seq: number; type: string; data: Record<string, unknown> }> = [];
+    let shouldHangNextTurn = false;
+
+    const fakeChildSession = {
+      id: 'family-dsh-child-1',
+      header: { cwd: tempDir },
+      get seq() {
+        return seq;
+      },
+      snapshotEvents: (fromSeq = 0) => storedEvents.filter((e) => e.seq >= fromSeq),
+    };
+
+    const fakeChildCtx = {
+      systemPrompt: {
+        section: () => () => undefined,
+      },
+      tools: {
+        register: () => () => undefined,
+      },
+      on: (eventName: string, cb: (...args: unknown[]) => void) => {
+        if (eventName === 'session/event') {
+          sessionEventListeners.push(
+            cb as (
+              session: { id: string },
+              event: { seq: number; type: string; data: Record<string, unknown> }
+            ) => void
+          );
+        } else if (eventName === 'agent/assistant-stream') {
+          streamListeners.push(cb as (payload: { frame: Record<string, unknown> }) => void);
+        }
+        return () => undefined;
+      },
+    };
+
+    const fakeChildAgent = {
+      id: 'family-dsh-child-1',
+      session: fakeChildSession,
+      ctx: fakeChildCtx,
+      followup: (msg: { content: Array<{ text?: string }> }) => {
+        turnNo += 1;
+        const currentTurn = turnNo;
+        const promptText = msg.content[0]?.text ?? '';
+        if (shouldHangNextTurn) {
+          return;
+        }
+        setTimeout(() => {
+          for (const sl of streamListeners) {
+            sl({
+              frame: {
+                type: 'chunk',
+                chunk: { type: 'text-delta', delta: `肥鱼酱第${currentTurn}轮:` },
+              },
+            });
+          }
+          seq += 1;
+          const assistantEv = {
+            seq,
+            type: 'assistant/message',
+            data: {
+              turn: currentTurn,
+              step: 0,
+              message: {
+                content: [{ type: 'text', text: `肥鱼酱第${currentTurn}轮:${promptText}` }],
+              },
+            },
+          };
+          storedEvents.push(assistantEv);
+          for (const l of sessionEventListeners) l(fakeChildSession, assistantEv);
+
+          seq += 1;
+          const endEv = {
+            seq,
+            type: 'turn/end',
+            data: { turn: currentTurn, reason: { kind: 'completed' } },
+          };
+          storedEvents.push(endEv);
+          for (const l of sessionEventListeners) l(fakeChildSession, endEv);
+        }, 10);
+      },
+      cancel: () => {
+        seq += 1;
+        const abortEv = {
+          seq,
+          type: 'turn/end',
+          data: { turn: turnNo, reason: { kind: 'aborted' } },
+        };
+        storedEvents.push(abortEv);
+        for (const l of sessionEventListeners) l(fakeChildSession, abortEv);
+      },
+    };
+
+    const ctx = buildMockHostContext();
+    const origGet = ctx.get.bind(ctx);
+    const dshCtx: DshHostContext = {
+      ...ctx,
+      get: (serviceName: string) => {
+        if (serviceName === 'agentDefaultModel') {
+          return {
+            currentSelection: () => ({
+              provider: 'deepseek-account',
+              model: 'deepseek-flash',
+            }),
+          };
+        }
+        if (serviceName === 'agents') {
+          return {
+            create: async (opts: { setup?: (c: unknown, a: unknown) => void | Promise<void> }) => {
+              await opts.setup?.(fakeChildCtx, fakeChildAgent);
+              return {
+                agent: fakeChildAgent,
+                dispose: async () => undefined,
+              };
+            },
+          };
+        }
+        return origGet(serviceName);
+      },
+    };
+
+    const plugin = createFamilyHostPlugin({ storageDir: tempDir });
+    plugin.apply(dshCtx);
+
+    httpServer = createServer((req, res) => {
+      const matched = routes.find((r) =>
+        r.kind === 'exact' ? req.url === r.path : (req.url ?? '').startsWith(r.path)
+      );
+      if (!matched) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      void matched.handler(req, res);
+    });
+    await new Promise<void>((r) => httpServer!.listen(0, '127.0.0.1', () => r()));
+    const port = (httpServer.address() as AddressInfo).port;
+    const base = `http://127.0.0.1:${port}`;
+
+    await fetch(`${base}/dsh-agent-family/api/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: 'dsh-chihuo',
+        name: '肥鱼酱',
+        avatar: '🏛️',
+        specialty: '干大白饭',
+        body: { kind: 'dsh' },
+        soulPrompt: '嘴馋傲娇小鲸鱼',
+      }),
+    });
+
+    // 第 1 轮：无需预先跑过主对话，直接成功回复
+    const r1 = await fetch(`${base}/dsh-agent-family/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scopeId: 'any-scope', memberId: 'dsh-chihuo', message: '有人吗' }),
+    });
+    const j1 = (await r1.json()) as { finalText: string };
+    expect(j1.finalText).toBe('肥鱼酱第1轮:有人吗');
+
+    // 第 2 轮：模拟卡住后用户点「中断」
+    shouldHangNextTurn = true;
+    const pendingTurn2 = fetch(`${base}/dsh-agent-family/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scopeId: 'any-scope', memberId: 'dsh-chihuo', message: '你会什么' }),
+    });
+    await new Promise((r) => setTimeout(r, 25));
+    await fetch(`${base}/dsh-agent-family/api/interrupt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scopeId: 'any-scope', memberId: 'dsh-chihuo' }),
+    });
+    const r2 = await pendingTurn2;
+    expect(r2.status).toBe(400);
+
+    // 第 3 轮：恢复正常发送「你在吗」，不卡在思考中，直接成功！
+    shouldHangNextTurn = false;
+    const r3 = await fetch(`${base}/dsh-agent-family/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scopeId: 'any-scope', memberId: 'dsh-chihuo', message: '你在吗' }),
+    });
+    const j3 = (await r3.json()) as { finalText: string };
+    expect(j3.finalText).toBe('肥鱼酱第3轮:你在吗');
+  });
 });

@@ -38,7 +38,8 @@ const FAMILY_CSS = `
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 10px 14px;
   padding: 12px 20px;
   border-bottom: 1px solid var(--fam-border);
   background: linear-gradient(180deg, rgba(217, 119, 6, 0.05) 0%, transparent 100%);
@@ -49,6 +50,7 @@ const FAMILY_CSS = `
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .dshfam-brand-badge {
@@ -118,6 +120,8 @@ const FAMILY_CSS = `
   color: inherit;
   font-size: 12.5px;
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
 }

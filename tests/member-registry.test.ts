@@ -3,7 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { probeAllBodies, resolveBodyExecutable } from '../src/core/cli-locator.ts';
+import {
+  buildChildProcessEnv,
+  probeAllBodies,
+  resolveBodyExecutable,
+  resolveNodeExecutable,
+} from '../src/core/cli-locator.ts';
 import { MemberRegistry, STARTER_MEMBER_TEMPLATES } from '../src/core/member-registry.ts';
 import { composeAwakeningSoul } from '../src/core/soul-composer.ts';
 
@@ -152,5 +157,30 @@ describe('MemberRegistry, SoulComposer & CliLocator', () => {
     expect(probes.find((item) => item.kind === 'claude')?.available).toBe(true);
     expect(probes.find((item) => item.kind === 'dsh')?.available).toBe(true);
     expect(probes.find((item) => item.kind === 'opencode')?.available).toBe(false);
+  });
+
+  it('resolves real node binary when process.execPath is an Electron GUI binary and injects NO_PROXY for loopback MCP', () => {
+    const fakeBinDir = mkdtempSync(join(tempDir, 'fake-node-'));
+    const fakeNode = join(fakeBinDir, 'node');
+    writeFileSync(fakeNode, '#!/bin/sh\nexit 0\n', 'utf8');
+    chmodSync(fakeNode, 0o755);
+
+    const resolved = resolveNodeExecutable({
+      execPathOverride: '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness',
+      extraSearchDirs: [fakeBinDir],
+      includeSystemPaths: false,
+    });
+    expect(resolved.command).toBe(fakeNode);
+
+    const fallback = resolveNodeExecutable({
+      execPathOverride: '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness',
+      extraSearchDirs: [],
+      includeSystemPaths: false,
+    });
+    expect(fallback.env.ELECTRON_RUN_AS_NODE).toBe('1');
+
+    const childEnv = buildChildProcessEnv();
+    expect(childEnv.NO_PROXY).toContain('127.0.0.1');
+    expect(childEnv.no_proxy).toContain('127.0.0.1');
   });
 });

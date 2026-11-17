@@ -225,4 +225,35 @@ describe('GroupChatEngine (Family Group Chat, Unread Delta, @Relay, [PASS], and 
     await hub.dispose();
     await phoneBus.stop();
   });
+
+  it('does not instruct the sole or first unanswered speaker in a group to reply [PASS]', async () => {
+    registry.update('fe-sis', { enabled: false });
+    registry.update('qa-guard', { enabled: false });
+
+    let capturedPrompt = '';
+    const driver = makeMockDriver(async (_memberId, prompt) => {
+      capturedPrompt = prompt;
+      return '肥鱼酱在呢！';
+    });
+
+    const hub = new FamilyHub({ registry, drivers: [driver] });
+    const groupEngine = new GroupChatEngine(hub, registry);
+    hub.attachGroupEngine(groupEngine);
+
+    const room = await groupEngine.postMessage({
+      scopeId: 's-sole',
+      groupId: 'family-main',
+      senderId: 'human',
+      senderName: '你',
+      senderAvatar: '🧑‍💻',
+      content: '有人在吗',
+      cwd: tempDir,
+    });
+
+    expect(capturedPrompt).not.toContain('只回复 `[PASS]`');
+    expect(room.messages).toHaveLength(2);
+    expect(room.messages[1]?.content).toBe('肥鱼酱在呢！');
+
+    await hub.dispose();
+  });
 });

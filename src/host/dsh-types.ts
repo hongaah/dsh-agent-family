@@ -37,9 +37,27 @@ export interface DshConnectionService {
   }): 401 | 403 | undefined;
 }
 
+export interface DshModelSelection {
+  readonly provider: string;
+  readonly model: string;
+  readonly reasoningEffort?: string;
+}
+
+export interface DshAgentDefaultModelService {
+  currentSelection?(): DshModelSelection | undefined;
+}
+
+export interface DshSessionEventRecord {
+  readonly seq: number;
+  readonly type: string;
+  readonly data: Record<string, unknown>;
+}
+
 export interface DshSessionHandle {
   readonly id?: string;
+  readonly seq?: number;
   readonly header: { readonly cwd?: string } & Record<string, unknown>;
+  snapshotEvents?(fromSeq?: number): readonly DshSessionEventRecord[];
 }
 
 export interface DshHostSessionStore {
@@ -53,11 +71,61 @@ export interface DshWorkingDirectoryService {
 
 export interface DshAgentLike {
   readonly session: DshSessionHandle & { readonly id: string };
+  readonly model?: {
+    current?(): DshModelSelection | undefined;
+  };
   readonly ctx?: DshHostContext;
+}
+
+export interface DshAgentScopedEventMap {
+  'session/event': (
+    session: DshSessionHandle & { readonly id: string },
+    event: DshSessionEventRecord
+  ) => void;
+  'agent/assistant-stream': (payload: {
+    readonly agent?: unknown;
+    readonly frame: Record<string, unknown>;
+  }) => void;
+  'agent/error': (payload: { readonly agent?: unknown; readonly error: unknown }) => void;
+}
+
+export interface DshAgentScopedContext {
+  readonly systemPrompt?: DshSystemPromptService;
+  readonly tools?: DshToolsRegistry;
+  on<K extends keyof DshAgentScopedEventMap>(
+    event: K,
+    listener: DshAgentScopedEventMap[K]
+  ): () => void;
+}
+
+export interface DshOwnedAgent {
+  readonly id: string;
+  readonly session: DshSessionHandle & { readonly id: string };
+  readonly ctx: DshAgentScopedContext;
+  readonly model?: {
+    current?(): DshModelSelection | undefined;
+  };
+  followup(message: Record<string, unknown>): void;
+  cancel?(cause: { readonly kind: 'user' | 'disposed' }): void;
+}
+
+export interface DshOwnedAgentHandle {
+  readonly agent: DshOwnedAgent;
+  dispose(): Promise<void>;
 }
 
 export interface DshAgentsRegistry {
   get?(sessionId: string): DshAgentLike | undefined;
+  create?(options: {
+    readonly sessionId: string;
+    readonly meta?: Record<string, unknown>;
+    readonly agentOptions?: Record<string, unknown>;
+    readonly signal?: AbortSignal;
+    readonly setup?: (
+      agentCtx: DshAgentScopedContext,
+      agent: DshOwnedAgent
+    ) => void | Promise<void>;
+  }): Promise<DshOwnedAgentHandle>;
 }
 
 export interface DshContentTextBlock {
@@ -89,12 +157,6 @@ export interface DshSubagentRuntime {
     readonly signal: AbortSignal;
     readonly delivery: 'parent' | 'caller';
   }): Promise<DshSubagentActivation>;
-  sendMessage?(
-    sender: DshAgentLike,
-    targetId: string,
-    content: readonly DshContentTextBlock[],
-    options: { readonly signal: AbortSignal }
-  ): Promise<string>;
 }
 
 export interface DshToolRunContext {
