@@ -21,9 +21,9 @@
 3. **完全尊重个体意志（原生权限透传）**
    - 插件**绝不在外层发明独立的权限档位，也不篡改本机各 CLI 原有的权限配置**。
    - 若成员 A 的底层 CLI 判定某次操作需要人类审批，插件仅作为「传声筒」将其原始询问与选项呈递给用户并回传点击结果；若成员 B 的底层 CLI 判定可直接放行，则静默自主完成。
-4. **独立闭环与「家庭手机」自主协作**
+4. **独立闭环、「家庭手机」与「家庭群聊」自主协作**
    - 成员平时各自独立工作（自己的上下文自己清楚，互不污染）。
-   - 每个被唤醒的成员随身配有一部**「家庭手机（`family-phone`）」**。遇到跨领域问题、方案评审或需要他人配合时，成员可自主拨号联系其他家庭成员探讨方案、请求协助；被呼叫成员依据自身灵魂立场独立判断——**既可协同配合、补充建议，也有权明确拒绝不合理或越界的请求**。
+   - 每个被唤醒的成员随身配有一部**「家庭手机（`family-phone`）」**，家里同时拥有人类与多成员共处的**「家庭群聊（总群与专题小群）」**。遇到跨领域问题、方案评审或需要多人配合时，成员既可一对一拨号商量，也可在群里互相 `@` 多轮争论与分工；任何成员均依据自身灵魂立场独立表态——**既可协同配合、补充建议，也有权明确拒绝不合理或越界的请求，无话可说时也可静默旁听不刷屏**。
 
 ---
 
@@ -45,7 +45,8 @@ dsh-family/
 │   │   ├── member-registry.ts   # ~/.dsh/family/members.json 户口本持久化与内置模板
 │   │   ├── soul-composer.ts     # 灵魂提示词组装（用户灵魂 + 具身身份与手机使用自觉）
 │   │   ├── cli-locator.ts       # macOS/Linux/NVM/Homebrew 可执行文件探测与体检
-│   │   └── family-hub.ts        # 常驻成员生命周期、单成员串行队列、审批路由与事件广播
+│   │   ├── family-hub.ts        # 常驻成员生命周期、单成员串行队列、审批路由与事件广播
+│   │   └── group-chat.ts        # 家庭群聊引擎（总群/专题群、未读增量投递、@接龙与 [PASS] 静默控制）
 │   ├── phone/
 │   │   ├── phone-bus.ts         # 127.0.0.1:0 随机密钥鉴权的本地家庭手机通信总线（含防死锁/跳数限制）
 │   │   └── phone-mcp-stdio.ts   # 配发给外部 CLI 子进程的轻量 stdio MCP 服务入口
@@ -69,6 +70,7 @@ dsh-family/
 └── tests/
     ├── member-registry.test.ts  # 户口本校验、启停与持久化单测
     ├── phone-bus.test.ts        # 家庭手机一对一通话、自主拒绝、占线防死锁与跳数上限单测
+    ├── group-chat.test.ts       # 家庭群聊未读增量、互相 @ 接龙、静默 [PASS]、轮次上限与插话打断单测
     ├── drivers.test.ts          # Mock 子进程仿真验证四大驱动双向流、灵魂注入与审批回传
     └── host-plugin.test.ts      # Cordis 工具注册、@成员点名拦截与生命周期回收单测
 ```
@@ -116,8 +118,8 @@ export interface FamilyMember {
 
 在唤醒任意身体时，将用户填写的 `soulPrompt` 与一段轻量的**具身协作自觉提示词**拼装后注入身体：
 - **自我认知**：明确自身称呼 `name`、唯一代号 `@${id}` 与专长职责 `specialty`。
-- **独立与协作准则**：属于自身职责内的工作直接动手独立闭环；遇到跨端接口对齐、方案拿不准或需他人配合时，主动使用随身 `family_phone`（先看 `phone_contacts`，再拨打 `phone_call` 或发起 `phone_roundtable`）。
-- **独立意志与拒绝权**：接到其他家庭成员来电时，站在自身专业视角审视——赞同时积极配合或给出具体方案；若认为对方诉求越界、方向错误或存在隐患，**必须直言提出异议或明确拒绝并给出替代建议**，不做盲从传声筒。
+- **独立与协作准则**：属于自身职责内的工作直接动手独立闭环；遇到跨端接口对齐、方案拿不准或需多人当面对齐时，主动使用随身 `family_phone`（查 `phone_contacts`、一对一拨打 `phone_call` 或发起多轮群聊 `phone_group_discuss`）。
+- **独立意志、群聊礼仪与拒绝权**：接到家庭成员来电或在群聊中看到新消息时，站在自身专业视角审视——赞同时积极配合或给出具体方案；若认为对方诉求越界、方向错误或存在隐患，**必须直言提出异议或明确拒绝并给出替代建议**；在群聊中若他人已表述充分、无需自己补充，仅回复 `[PASS]` 保持安静倾听，不发客套废话。
 
 ### 3.3 具身会话与流式事件契约（`LiveMemberSession`）
 
@@ -161,6 +163,38 @@ export interface LiveMemberSession {
   sendTurn(prompt: string, signal: AbortSignal): AsyncIterable<MemberStreamEvent>
   replyApproval(requestId: string, optionId: string): Promise<void>
   dispose(): Promise<void>
+}
+```
+
+### 3.4 家庭群聊房间与消息契约（`FamilyGroupRoom`）
+
+群聊房间仅记录外部聊天室的公共消息流与各成员已读游标，**不侵入任何 CLI 内部上下文数据库**：
+
+```ts
+export interface GroupMessage {
+  readonly id: string
+  readonly groupId: string
+  /** 'human' | 'lead' | 'system' | member.id */
+  readonly senderId: string
+  readonly senderName: string
+  readonly content: string
+  /** 消息正文中解析出的有效被 @ 成员 ID 列表 */
+  readonly mentions: readonly string[]
+  readonly createdAt: string
+}
+
+export interface FamilyGroupRoom {
+  /** 默认内置 'family-main'（🏠 家庭总群），也支持创建任意专题小群 */
+  readonly id: string
+  readonly title: string
+  readonly scopeId: string
+  /** 'all_enabled' 动态涵盖当前所有在岗成员；数组为指定成员子集 */
+  readonly memberIds: 'all_enabled' | readonly string[]
+  readonly messages: readonly GroupMessage[]
+  /** 每个成员在该群已投递到的消息数组下标，用于切片计算「未读群消息增量」 */
+  readonly readCursors: Readonly<Record<string, number>>
+  readonly activeSpeakerId: string | null
+  readonly running: boolean
 }
 ```
 
@@ -212,7 +246,7 @@ export interface LiveMemberSession {
 
 ---
 
-## 5. 「家庭手机（`family-phone`）」跨成员通讯总线与防死锁设计
+## 5. 「家庭手机（`family-phone`）」与「家庭群聊」跨成员协作设计
 
 ### 5.1 物理通信架构
 1. 宿主启动 `FamilyPhoneBus`，在 `127.0.0.1:0`（系统随机空闲端口）开启仅本机回环可访问的轻量 HTTP JSON 端点，并生成单次运行期随机 32 字节十六进制密钥 `busToken`。
@@ -226,21 +260,36 @@ export interface LiveMemberSession {
 ### 5.2 手机工具定义
 每个成员的 `family_phone` 提供以下 3 个工具：
 
-1. **`phone_contacts`**：无必填参数。返回当前在岗的其他家庭成员名片列表（`id`、`name`、`specialty`、`bodyKind`、当前状态 `idle | working | in_call | awaiting_approval`）。
+1. **`phone_contacts`**：无必填参数。返回当前在岗的其他家庭成员名片列表（`id`、`name`、`specialty`、`bodyKind`、当前状态 `idle | working | in_call | awaiting_approval`）及当前加入的家庭群列表。
 2. **`phone_call`**：
    - 入参：`{ to: string, intent: 'discuss' | 'request_help' | 'sync', message: string }`
-   - 行为：向目标成员 `to` 发起通话。目标成员若尚未唤醒则在相同项目目录 `cwd` 下自动唤醒；向其投递格式化来电消息（注明来电成员姓名、代号、意图与内容），等待其独立思考或操作完毕后，将回复文本与通话记录 ID 返回给主叫方。
-3. **`phone_roundtable`**：
-   - 入参：`{ participants: readonly string[], topic: string, context: string }`
-   - 行为：并发拨通多位家庭成员征求各自专业视角的方案评估或异议，汇总每位成员的真实答复后一次性返回给发起人。
+   - 行为：向目标成员 `to` 发起一对一通话。目标成员若尚未唤醒则在相同项目目录 `cwd` 下自动唤醒；向其投递格式化来电消息（注明来电成员姓名、代号、意图与内容），等待其独立思考或操作完毕后，将回复文本与通话记录 ID 返回给主叫方。
+3. **`phone_group_discuss`**：
+   - 入参：`{ groupId?: string, title?: string, participants?: readonly string[], message: string }`
+   - 行为：在已有群（如默认 `'family-main'` 家庭总群）发话，或拉起指定 `participants` 新建专题小群发起多轮讨论。群内其他成员按群聊调度规则依次读取未读群消息、彼此可见地接话/`@`追问/提出反对或拒绝，本轮群讨论收敛后将完整新增群聊记录返回给发起成员。
 
-### 5.3 死锁消除与防无限转接护栏
+### 5.3 一对一通话死锁消除与跳数护栏
 跨智能体同步调用最核心的风险是回环死锁（`A` 等 `B` 回话时 `B` 又同步呼叫 `A`）与无限踢皮球：
 - **通话链动态追踪（`currentTurnCallChain`）**：由于每个成员都是跨轮次常驻进程，呼叫链不能写死在启动环境变量中，而由宿主 `FamilyHub` 在该成员当前活跃轮次（每个 `(scopeId, memberId)` 同一时刻仅执行一个轮次）的内存上下文中动态维护 `readonly string[]`。例如人类派活给 `arch-bro`（其 `currentTurnCallChain` 为 `[]`），`arch-bro` 通过手机呼叫 `fe-sis` 时，总线读取主叫方 `arch-bro` 当前轮次的链并追加自身，使 `fe-sis` 本轮执行的 `currentTurnCallChain` 变为 `['arch-bro']`。
 - **占线回环秒拒（消除死锁）**：若 `fe-sis` 在处理该来电期间调用 `phone_call({ to: 'arch-bro' })`，总线检测到 `'arch-bro'` 已在当前 `currentTurnCallChain` 中，**不进入队列等待，立即返回结构化占线提示**：
   > `成员「架构师大哥 (arch-bro)」正拿着电话等待你的本次回复，无需反向拨号。请直接在当前回复中向 TA 提出你的反问、修改建议或拒绝理由。`
 - **最大通话跳数限制（`MAX_CALL_HOPS = 3`）**：当 `currentTurnCallChain.length >= 3` 时拒绝继续向下游第 4 层转拨，提示当前成员先向上游汇报阶段性判断或分歧点。
 - **全程留痕广播**：每次拨号、接听、回复摘要均生成 `PhoneCallRecord` 事件，通过 SSE 实时推送到前端「家庭客厅」与主对话协作卡片。
+
+### 5.4 「家庭群聊」协调引擎（`GroupChatEngine`）
+为了让多智能体群聊像真人微信群一样自然有序，同时彻底规避「全员同时抢话盲答」与「无限客套死循环」，引擎采用以下四项机制：
+
+1. **未读群消息增量投递（Unread Delta Delivery）**：
+   - 每个成员的底层 CLI 大脑保持独立。当轮到成员 `M` 发言时，引擎切片取出 `room.messages.slice(readCursors[M] ?? 0)`（即上次 `M` 看群后群里新增的所有人发言），更新 `readCursors[M]` 后拼装为清晰的群新消息上下文喂给 `M`。因此后发言的成员能完整看见前序成员刚提出的方案、争论或拒绝理由。
+2. **`@` 接龙传递话筒（Speaker Queue）**：
+   - 若触发消息包含显式 `@成员ID`，发言队列仅初始化为被点名的群成员；若未 `@` 特定人（面向全群广播），发言队列按群内其他在岗成员顺序排列。
+   - 当某位成员公开发言且内容中 `@其他群成员` 时，被点名成员自动排入发言队列（排除正在等待 `phone_group_discuss` 工具返回的同步主叫方，防止重入死锁），实现自然的「大哥提议 `@妹妹` → 妹妹指出前端问题并 `@弟弟` → 弟弟表态拍板」多轮接龙。
+   - 若正在持有当前群话筒发言的成员 `M` 误调 `phone_group_discuss` 往同一群发消息，总线立即提示其直接通过当前回复正文发言，避免自锁。
+3. **`[PASS]` 静默旁听机制（防无意义刷屏）**：
+   - 群聊提示词明确告知成员：有实质专业意见、分工认领或反对理由则直接发言；若他人已说清楚、无需自己插话，只需回复 `[PASS]`。引擎识别纯 `[PASS]` 回复后仅推送一条轻量的「某成员已阅（旁听）」状态，不生成群聊废话气泡。
+4. **单轮自由接龙上限与人类随时插话控场**：
+   - 单次触发下的成员连续实质发言上限为 `MAX_GROUP_RELAY_TURNS = 6` 条；队列排空（达成阶段共识）或触及上限后自动停下，将话筒交还给人类。
+   - 人类在群聊窗口可随时点击「暂停讨论」，或直接发送新消息插话（自动中止当前未完接龙，基于人类最新拍板开启新一轮响应）。
 
 ---
 
@@ -249,20 +298,21 @@ export interface LiveMemberSession {
 ### 6.1 三条派活入口汇聚至 `FamilyHub`
 同一个 DSH 会话（`scopeId = sessionId`）在三条入口间共享同一批在线具身成员实例：
 1. **主对话统筹（DSH Lead 工具集）**：
-   - `ctx.systemPrompt` 注册 `dsh-family:roster` 段落，动态列出当前在岗家庭成员及其专长，指导主 Agent 将专业任务或并行任务通过 `family_assign` 交由家庭成员独立或协作完成。
+   - `ctx.systemPrompt` 注册 `dsh-family:roster` 段落，动态列出当前在岗家庭成员及其专长，指导主 Agent 将专业任务或跨端议题通过 `family_assign` 或 `family_group_discuss` 交由家庭成员独立或群聊协作完成。
    - `family_assign`：支持一次指派 1 至多个成员任务（`tasks: [{ memberId, goal, cwd?, fresh? }]`），多成员并发推进，返回各成员最终结论及期间发生的「家庭手机通话纪要」。
-   - `family_status`：查询家庭成员在线状态、身体就绪情况与待处理审批。
-   - `family_interrupt`：中断指定成员正在执行的当前轮次。
+   - `family_group_discuss`：将复杂议题抛入家庭总群或指定成员专题群开启多轮群聊碰撞，返回各位成员的群内讨论记录、分歧/拒绝点与最终共识。
+   - `family_status`：查询家庭成员在线状态、身体就绪情况、活跃群聊与待处理审批。
+   - `family_interrupt`：中断指定成员正在执行的当前轮次或暂停某个群聊的接龙。
 2. **主输入框 `@成员ID` 点名直派**：
-   - 监听 `agent/pre-step` 瀑布流事件，当检测到用户输入包含 `@<已启用成员ID>` 时，自动附加上下文路由指引，要求主 Agent 直接将需求原汁原味委派给被点名的家庭成员处理。
-3. **左侧「智能体家庭」工作台一对一直聊**：
-   - 用户可在工作台选定关联的工作区会话（或默认独立工作区），点击任意家庭成员直接发消息交代任务、实时观看其思考与输出流，无需经过主对话转述。
+   - 监听 `agent/pre-step` 瀑布流事件，当检测到用户输入包含 `@<已启用成员ID>` 时，自动附加上下文路由指引（单个成员建议 `family_assign` 直派，同时 `@` 多个成员可发起并行委派或 `family_group_discuss` 群聊）。
+3. **左侧「智能体家庭」工作台（群聊 + 一对一私聊）**：
+   - 用户可在工作台直接进入 `🏠 家庭总群`、自建专题小群与多位成员开会讨论（支持 `@` 点名、插话拍板、一键暂停），也可点击任意单个家庭成员一对一交代任务并观看实时思考流。
 
 ### 6.2 界面结构（DSH Web / Desktop Client）
 1. **左侧一级常驻入口**：通过 `sidebar.panellist` 与 `main` Slot 挂载「智能体家庭」工作台，包含两个视图页签：
-   - **「家庭客厅」**：左栏为成员在线状态列表（区分空闲、独立推进中、通话协商中、举手待批示）；中栏为选中成员的实时对话与动作流（支持发送指令、中断当前动作、重置唤醒新身体）；右栏为实时滚动的**「家庭手机动态墙」**（清晰展示成员间谁找了谁、讨论了什么、达成了合作还是拒绝了提议）。
+   - **「家庭客厅」**：左栏上方为**「群聊空间」**（置顶 `🏠 家庭总群` 与 `+ 新建群聊`），下方为**「家庭成员（私聊）」**列表（区分空闲、独立推进中、通话/群聊发言中、举手待批示）；中栏根据当前选中对象切换为「多人头像气泡群聊室（含正在输入、已阅旁听提示、`@` 成员选择器与暂停按钮）」或「单人实时工作流窗口」；右栏为实时滚动的**「家庭手机动态墙」**（展示成员后台私下拨号协商与拒绝记录）。
    - **「成员与灵魂工坊」**：顶部展示本机 `claude`、`codex`、`opencode`、`dsh` 四具身体的实时体检状态与探测路径（支持一键重新体检）；下方为成员卡片网格与新建/编辑抽屉（配置代号、称呼、头像、专长、选择身体、编写灵魂提示词或套用参考模板）。
-2. **对话流内嵌协作卡（`tool.call.toolview`）**：为 `family_assign` 渲染紧凑美观的成员并行进度卡与成员间通话折叠摘要。
+2. **对话流内嵌协作卡（`tool.call.toolview`）**：为 `family_assign` 与 `family_group_discuss` 渲染紧凑美观的成员并行进度卡、群聊发言气泡摘要与成员间通话折叠记录。
 3. **双栖「举手批示」横幅（`ApprovalBanner`）**：通过 `conversation.input.top`（或工作台顶部常驻条）双端挂载——只要任一成员的 CLI 发出 `approval_requested`，用户在主聊天窗或家庭客厅都能第一时间看到该成员的原样选项按钮并一键批复。
 
 ---
@@ -288,6 +338,7 @@ export interface LiveMemberSession {
    - `member-registry.test.ts`：校验成员 ID 规范、重复拦截、模板导入与 JSON 原子落盘。
    - `drivers.test.ts`：使用可控 Node Mock 子进程完整模拟 `claude`（`stream-json` + `can_use_tool` 审批往返）、`codex`（`app-server` JSON-RPC 握手、流式增量与审批回复）、`opencode`（`acp` 会话、MCP 透传与 `request_permission` 选项回传）及异常断流恢复。
    - `phone-bus.test.ts`：验证成员 A 拨打成员 B 协同分析、成员 B 基于灵魂设定拒绝不合理请求、`A -> B -> A` 占线回环秒拒无死锁，以及超过 3 跳自动熔断。
+   - `group-chat.test.ts`：验证家庭群聊未读增量投递（后发言成员能看到前序成员发言并反驳/拒绝）、`@成员ID` 自动接龙传递话筒、`[PASS]` 静默旁听不产废话气泡、`MAX_GROUP_RELAY_TURNS` 轮次封顶与人类插话打断。
    - `host-plugin.test.ts`：验证 `family_*` 工具注册、系统提示词动态名册生成、`@成员ID` 预步骤路由增强与插件卸载全量清理。
 3. **构建与桌面端安装闭环**：
    - `pnpm run build` 正常产出 `dist/index.js`、`dist/client.js` 与 `dist/phone-mcp.js`。
