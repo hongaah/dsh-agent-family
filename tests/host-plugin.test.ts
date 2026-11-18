@@ -98,7 +98,12 @@ describe('Cordis Host Plugin (Tools, SystemPrompt, @Mention Pre-Step, Web API & 
       },
       systemPrompt: {
         section: (spec) => {
-          promptSections.set(spec.name, spec.text);
+          if (typeof spec.order !== 'number' || !Number.isFinite(spec.order)) {
+            throw new TypeError(`prompt section "${spec.name}" order must be a finite number`);
+          }
+          promptSections.set(spec.name, () =>
+            typeof spec.text === 'function' ? spec.text() : spec.text
+          );
           return () => {
             promptSections.delete(spec.name);
           };
@@ -294,7 +299,12 @@ describe('Cordis Host Plugin (Tools, SystemPrompt, @Mention Pre-Step, Web API & 
 
     const fakeChildCtx = {
       systemPrompt: {
-        section: () => () => undefined,
+        section: (spec: { name: string; order?: number }) => {
+          if (typeof spec.order !== 'number' || !Number.isFinite(spec.order)) {
+            throw new TypeError(`prompt section "${spec.name}" order must be a finite number`);
+          }
+          return () => undefined;
+        },
       },
       tools: {
         register: () => () => undefined,

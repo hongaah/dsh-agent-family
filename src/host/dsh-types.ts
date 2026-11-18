@@ -187,10 +187,12 @@ export interface DshToolsRegistry {
 }
 
 export interface DshSystemPromptService {
+  getSectionOrder?(key: string): number | undefined;
   section(spec: {
     readonly name: string;
-    readonly order?: number;
-    readonly text: () => string;
+    readonly order: number;
+    readonly interpolate?: boolean;
+    readonly text: string | (() => string);
   }): () => void;
 }
 

@@ -300,8 +300,12 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
               signal,
               setup: (agentCtx) => {
                 // 使用 agent 作用域的 deployment:persona-prefix 注入成员灵魂，遮蔽通用默认人设
+                const personaOrder =
+                  agentCtx.systemPrompt?.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') ?? 0;
                 agentCtx.systemPrompt?.section({
                   name: 'deployment:persona-prefix',
+                  order: personaOrder,
+                  interpolate: false,
                   text: () => composedSoul,
                 });
                 if (hubRef) {
@@ -511,10 +515,13 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
       // 1. 注册主对话动态家庭名册系统提示词
       ctx.inject(['systemPrompt'], (scoped) => {
         if (!scoped.systemPrompt) return;
+        const rosterOrder = (scoped.systemPrompt.getSectionOrder?.('TOOL_SUBAGENT') ?? 2800) + 50;
         return scoped.effect(
           () =>
             scoped.systemPrompt!.section({
               name: 'dsh-agent-family:roster',
+              order: rosterOrder,
+              interpolate: false,
               text: () => {
                 const enabled = registry.listEnabled();
                 if (enabled.length === 0) {
