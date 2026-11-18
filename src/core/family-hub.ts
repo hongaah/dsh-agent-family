@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 
 import { formatAvatarPrefixForPrompt } from './avatar-utils.ts';
 import { resolveNodeExecutable } from './cli-locator.ts';
@@ -20,7 +20,7 @@ import type {
 } from './types.ts';
 import type { BodyDriver, LiveMemberSession } from '../drivers/driver.ts';
 import type { GroupChatEngine } from './group-chat.ts';
-import type { FamilyPhoneBus } from '../phone/phone-bus.ts';
+import { resolvePhoneMcpScriptPath, type FamilyPhoneBus } from '../phone/phone-bus.ts';
 
 export const MAX_CALL_HOPS = 3;
 
@@ -92,6 +92,7 @@ export class FamilyHub {
       this.drivers.set(driver.kind, driver);
     }
     this.restoreFeedsFromDisk();
+    this.restoreCallsFromDisk();
     this.registry.subscribe((members) => {
       this.emit({ type: 'roster_updated', members });
     });
@@ -284,12 +285,13 @@ export class FamilyHub {
           actor.statusText = `正在唤醒 ${member.body.kind} 身体…`;
           this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
           const composedSoul = composeAwakeningSoul(member, this.registry.listEnabled());
+          const phoneMcp = await this.buildPhoneMcpSpec(input.scopeId, member.id);
           actor.session = await driver.awaken({
             scopeId: input.scopeId,
             member,
             composedSoul,
             cwd: input.cwd,
-            phoneMcp: this.buildPhoneMcpSpec(input.scopeId, member.id),
+            phoneMcp,
             signal: turnController.signal,
           });
         }
@@ -408,10 +410,18 @@ export class FamilyHub {
     if (enabled.length === 0) {
       return '当前家庭暂无在岗成员。';
     }
+    const stateLabels: Readonly<Record<MemberActivityState, string>> = {
+      sleeping: '在岗待命（可随时拨通唤醒）',
+      idle: '在线空闲（可随时拨通）',
+      working: '正在执行任务',
+      in_call: '通话中',
+      awaiting_approval: '等待用户批示',
+      error: '上次异常（拨打将重新唤醒）',
+    };
     const lines = enabled.map((item) => {
       const snap = this.getMemberSnapshot(scopeId, item.id);
       const selfTag = item.id === callerId ? '（你自己）' : '';
-      return `- ${formatAvatarPrefixForPrompt(item.avatar)}${item.name} (@${item.id})${selfTag} | 身体: ${item.body.kind} | 状态: ${snap.state} | 专长: ${item.specialty}`;
+      return `- ${formatAvatarPrefixForPrompt(item.avatar)}${item.name} (@${item.id})${selfTag} | 身体: ${item.body.kind} | 状态: ${stateLabels[snap.state]} | 专长: ${item.specialty}`;
     });
     const rooms = this.groupEngine?.listRooms(scopeId) ?? [];
     const roomLines =
@@ -637,15 +647,16 @@ export class FamilyHub {
     await Promise.all(disposals);
   }
 
-  private buildPhoneMcpSpec(scopeId: string, callerId: string): PhoneMcpLaunchSpec {
+  private async buildPhoneMcpSpec(scopeId: string, callerId: string): Promise<PhoneMcpLaunchSpec> {
     if (this.phoneBus) {
+      await this.phoneBus.start();
       return this.phoneBus.buildLaunchSpec(scopeId, callerId);
     }
-    const fallbackScript = resolve(import.meta.dirname, '../../dist/phone-mcp.js');
+    const fallbackScript = resolvePhoneMcpScriptPath(import.meta.dirname);
     const nodeExec = resolveNodeExecutable();
     return {
       command: nodeExec.command,
-      args: [existsSync(fallbackScript) ? fallbackScript : ''],
+      args: [fallbackScript],
       env: {
         ...nodeExec.env,
         NO_PROXY: '127.0.0.1,localhost,::1',
@@ -711,6 +722,7 @@ export class FamilyHub {
     if (this.callRecords.length > 200) {
       this.callRecords.shift();
     }
+    this.persistCallsToDisk();
     this.emit({ type: 'phone_call_updated', record });
   }
 
@@ -725,6 +737,7 @@ export class FamilyHub {
       ...patch,
     };
     this.callRecords[idx] = updated;
+    this.persistCallsToDisk();
     this.emit({ type: 'phone_call_updated', record: updated });
   }
 
@@ -789,6 +802,47 @@ export class FamilyHub {
           (item): item is MemberChatEntry =>
             Boolean(item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string')
         );
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  private persistCallsToDisk(): void {
+    if (!this.storageDir) return;
+    try {
+      mkdirSync(this.storageDir, { recursive: true });
+      const filePath = join(this.storageDir, 'phone-calls.json');
+      const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+      const records = this.callRecords.slice(-120);
+      writeFileSync(tmpPath, `${JSON.stringify({ version: 1, calls: records }, null, 2)}\n`, 'utf8');
+      renameSync(tmpPath, filePath);
+    } catch {
+      // ignore
+    }
+  }
+
+  private restoreCallsFromDisk(): void {
+    if (!this.storageDir) return;
+    const filePath = join(this.storageDir, 'phone-calls.json');
+    if (!existsSync(filePath)) return;
+    try {
+      const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+      const calls = Array.isArray(parsed.calls) ? parsed.calls : [];
+      for (const raw of calls) {
+        if (!raw || typeof raw !== 'object') continue;
+        const item = raw as Record<string, unknown>;
+        if (typeof item.id !== 'string' || typeof item.scopeId !== 'string') continue;
+        const normalized: PhoneCallRecord =
+          item.status === 'ringing'
+            ? ({
+                ...(item as unknown as PhoneCallRecord),
+                status: 'failed',
+                reply: '宿主重启时通话已结束',
+                finishedAt: new Date().toISOString(),
+              } satisfies PhoneCallRecord)
+            : (item as unknown as PhoneCallRecord);
+        this.callRecords.push(normalized);
       }
     } catch {
       // ignore

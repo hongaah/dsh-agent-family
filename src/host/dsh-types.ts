@@ -170,6 +170,7 @@ export interface DshToolRunContext {
 export interface DshRawToolDefinition {
   readonly name: string;
   readonly description: string;
+  readonly timeoutMs?: number;
   readonly parameters: Record<string, unknown>;
   readonly output: {
     readonly schema: Record<string, unknown>;
@@ -184,6 +185,10 @@ export interface DshToolsRegistry {
     tool: DshRawToolDefinition,
     options?: { readonly when: () => boolean | Promise<boolean> }
   ): () => void;
+  restrict?(filter: {
+    readonly allow?: readonly string[];
+    readonly deny?: readonly string[];
+  }): () => void;
 }
 
 export interface DshSystemPromptService {

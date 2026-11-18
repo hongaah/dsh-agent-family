@@ -188,10 +188,21 @@ function registerScopedPhoneToolsOnDshAgent(
   memberId: string
 ): void {
   if (!agentCtx.tools) return;
+
+  // 屏蔽仅供主对话统筹者使用的全局家庭派工工具，让成员专心使用自身「家庭手机」
+  try {
+    agentCtx.tools.restrict?.({
+      deny: ['family_assign', 'family_group_discuss', 'family_status', 'family_interrupt'],
+    });
+  } catch {
+    // 若测试环境未全局注册上述工具，忽略未知全局工具过滤异常
+  }
+
   for (const schema of FamilyPhoneBus.getToolSchemas()) {
     agentCtx.tools.register({
       name: schema.name,
       description: schema.description,
+      timeoutMs: 600_000,
       parameters: schema.inputSchema as unknown as Record<string, unknown>,
       output: {
         schema: { type: 'string' },
@@ -329,6 +340,13 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
               if (settled) return;
               if (frame.type === 'chunk' && frame.chunk && typeof frame.chunk === 'object') {
                 const chunk = frame.chunk as Record<string, unknown>;
+                if (chunk.type === 'reasoning-delta') {
+                  onStatus?.('深度思考中…');
+                  return;
+                }
+                if (chunk.type && chunk.type !== 'text-delta') {
+                  return;
+                }
                 const delta =
                   typeof chunk.delta === 'string'
                     ? chunk.delta
@@ -561,11 +579,12 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
               payload: DshPreStepPayload,
               next: () => Promise<DshPreStepDecision>
             ): Promise<DshPreStepDecision> => {
-              if (payload.agent?.session?.id) {
-                observedAgents.set(payload.agent.session.id, payload.agent);
+              const sessId = payload.agent?.session?.id ?? '';
+              if (sessId && !sessId.startsWith('family-')) {
+                observedAgents.set(sessId, payload.agent);
               }
               const decision = await next();
-              if (decision.kind === 'reject' || payload.signal.aborted) {
+              if (decision.kind === 'reject' || payload.signal.aborted || sessId.startsWith('family-')) {
                 return decision;
               }
 
@@ -659,6 +678,7 @@ function registerFamilyTools(
         name: 'family_assign',
         description:
           '向一位或多位家庭成员分配任务（多位成员将并发独立推进，期间他们可自主通过随身家庭手机联系其他成员协作或拒绝不合理要求）。',
+        timeoutMs: 600_000,
         parameters: {
           type: 'object',
           properties: {
@@ -798,6 +818,7 @@ function registerFamilyTools(
         name: 'family_group_discuss',
         description:
           '在家庭群聊（默认家庭总群 family-main，或指定 participants 拉起专题群）发起多轮协作讨论。成员能彼此看到对方发言、互相 @ 追问或拒绝不合理提议。',
+        timeoutMs: 600_000,
         parameters: {
           type: 'object',
           properties: {

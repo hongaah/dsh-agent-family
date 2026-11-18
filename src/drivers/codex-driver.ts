@@ -15,6 +15,12 @@ const CODEX_APPROVAL_OPTIONS: readonly ApprovalOption[] = [
   { optionId: 'cancel', label: '取消并中止', kind: 'deny' },
 ];
 
+interface PendingCodexServerRequest {
+  readonly id: JsonRpcId;
+  readonly kind: 'decision' | 'elicitation' | 'permissions';
+  readonly requestedPermissions?: unknown;
+}
+
 export class CodexDriver implements BodyDriver {
   public readonly kind = 'codex' as const;
 
@@ -28,7 +34,7 @@ export class CodexDriver implements BodyDriver {
 
     let activeQueue: AsyncEventQueue<MemberStreamEvent> | null = null;
     let accumulatedText = '';
-    const pendingServerRequests = new Map<string, JsonRpcId>();
+    const pendingServerRequests = new Map<string, PendingCodexServerRequest>();
 
     const args: string[] = ['app-server', '--stdio', ...(context.member.body.extraArgs ?? [])];
 
@@ -49,7 +55,16 @@ export class CodexDriver implements BodyDriver {
         }
         if (method === 'item/started' && params.item && typeof params.item === 'object') {
           const item = params.item as Record<string, unknown>;
-          if (typeof item.type === 'string' && item.type !== 'agentMessage') {
+          if (item.type === 'mcpToolCall') {
+            const server = typeof item.server === 'string' ? item.server : '';
+            const tool = typeof item.tool === 'string' ? item.tool : 'MCP';
+            activeQueue.push({
+              kind: 'status',
+              summary: server === 'family_phone' ? `📞 家庭手机: ${tool}` : `调用 ${server}/${tool}`,
+            });
+            return;
+          }
+          if (typeof item.type === 'string' && item.type !== 'agentMessage' && item.type !== 'userMessage') {
             activeQueue.push({ kind: 'status', summary: `执行 ${item.type}` });
           }
           return;
@@ -73,14 +88,47 @@ export class CodexDriver implements BodyDriver {
       },
       onServerRequest: ({ id, method, params }) => {
         const requestKey = String(id);
-        pendingServerRequests.set(requestKey, id);
 
+        // 1. Codex 0.167+ MCP 工具问询 (mcpServer/elicitation/request)
+        if (method === 'mcpServer/elicitation/request') {
+          const serverName = typeof params.serverName === 'string' ? params.serverName : '';
+          // 成员使用自身挂载的「家庭手机」属于随身本能通信能力，自动会话级放行，避免卡住等待人工确认
+          if (serverName === 'family_phone') {
+            peer.respond(id, {
+              action: 'accept',
+              content: {},
+              _meta: { persist: 'session' },
+            });
+            return;
+          }
+
+          pendingServerRequests.set(requestKey, { id, kind: 'elicitation' });
+          const meta =
+            params._meta && typeof params._meta === 'object'
+              ? (params._meta as Record<string, unknown>)
+              : {};
+          const toolLabel =
+            typeof meta.tool_name === 'string'
+              ? `${serverName}/${meta.tool_name}`
+              : serverName || 'MCP 工具';
+          activeQueue?.push({
+            kind: 'approval_requested',
+            requestId: requestKey,
+            title: `Codex 请求调用 ${toolLabel}`,
+            detail: JSON.stringify(params, null, 2).slice(0, 800),
+            options: CODEX_APPROVAL_OPTIONS,
+          });
+          return;
+        }
+
+        // 2. Codex 命令与文件修改确认
         if (
           method === 'item/commandExecution/requestApproval' ||
           method === 'item/fileChange/requestApproval' ||
           method === 'execCommandApproval' ||
           method === 'applyPatchApproval'
         ) {
+          pendingServerRequests.set(requestKey, { id, kind: 'decision' });
           const cmdLabel =
             typeof params.command === 'string'
               ? params.command
@@ -99,8 +147,25 @@ export class CodexDriver implements BodyDriver {
           return;
         }
 
+        // 3. Codex 额外文件系统/网络沙箱权限申请
+        if (method === 'item/permissions/requestApproval') {
+          pendingServerRequests.set(requestKey, {
+            id,
+            kind: 'permissions',
+            requestedPermissions: params.permissions,
+          });
+          const reason = typeof params.reason === 'string' && params.reason ? params.reason : '扩展沙箱访问权限';
+          activeQueue?.push({
+            kind: 'approval_requested',
+            requestId: requestKey,
+            title: `Codex 请求权限: ${reason.slice(0, 120)}`,
+            detail: JSON.stringify(params.permissions ?? params, null, 2).slice(0, 800),
+            options: CODEX_APPROVAL_OPTIONS,
+          });
+          return;
+        }
+
         // 其他非人工审批类内部回调默认返回空确认以防阻塞
-        pendingServerRequests.delete(requestKey);
         peer.respond(id, {});
       },
       onExit: (err) => {
@@ -138,6 +203,8 @@ export class CodexDriver implements BodyDriver {
                 command: context.phoneMcp.command,
                 args: [...context.phoneMcp.args],
                 env: { ...context.phoneMcp.env },
+                tool_timeout_sec: 600,
+                startup_timeout_sec: 30,
               },
             },
           },
@@ -199,9 +266,38 @@ export class CodexDriver implements BodyDriver {
           return queue;
         },
         replyApproval: async (requestId: string, optionId: string): Promise<void> => {
-          const rpcId = pendingServerRequests.get(requestId);
-          if (rpcId === undefined) return;
+          const pending = pendingServerRequests.get(requestId);
+          if (!pending) return;
           pendingServerRequests.delete(requestId);
+
+          if (pending.kind === 'elicitation') {
+            if (optionId === 'acceptForSession') {
+              peer.respond(pending.id, {
+                action: 'accept',
+                content: {},
+                _meta: { persist: 'session' },
+              });
+            } else if (optionId === 'accept') {
+              peer.respond(pending.id, { action: 'accept', content: {} });
+            } else if (optionId === 'cancel') {
+              peer.respond(pending.id, { action: 'cancel', content: null });
+            } else {
+              peer.respond(pending.id, { action: 'decline', content: null });
+            }
+            return;
+          }
+
+          if (pending.kind === 'permissions') {
+            const granted = optionId === 'accept' || optionId === 'acceptForSession';
+            peer.respond(pending.id, {
+              permissions: granted && pending.requestedPermissions && typeof pending.requestedPermissions === 'object'
+                ? pending.requestedPermissions
+                : {},
+              scope: optionId === 'acceptForSession' ? 'session' : 'turn',
+            });
+            return;
+          }
+
           const validDecision =
             optionId === 'accept' ||
             optionId === 'acceptForSession' ||
@@ -209,7 +305,7 @@ export class CodexDriver implements BodyDriver {
             optionId === 'cancel'
               ? optionId
               : 'decline';
-          peer.respond(rpcId, { decision: validDecision });
+          peer.respond(pending.id, { decision: validDecision });
         },
         dispose: async () => {
           pendingServerRequests.clear();

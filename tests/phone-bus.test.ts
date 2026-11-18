@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -18,7 +18,7 @@ import {
   type BodyDriver,
   type LiveMemberSession,
 } from '../src/drivers/driver.ts';
-import { FamilyPhoneBus } from '../src/phone/phone-bus.ts';
+import { FamilyPhoneBus, resolvePhoneMcpScriptPath } from '../src/phone/phone-bus.ts';
 
 type ScriptedBehavior = (ctx: {
   prompt: string;
@@ -396,5 +396,83 @@ describe('FamilyHub & FamilyPhoneBus (Collaboration, Refusal, Anti-Deadlock & Ap
 
     await hub.dispose();
     await phoneBus.stop();
+  });
+
+  it('resolves phone-mcp.js accurately from bundled dist directory, awaits unstarted phoneBus automatically, and persists callRecords', async () => {
+    // 1. 模拟生产环境打包后的 ~/.dsh/profiles/desktop/node_modules/dsh-agent-family/dist 目录结构
+    const simulatedPkgRoot = join(tempDir, 'simulated-pkg');
+    const simulatedDist = join(simulatedPkgRoot, 'dist');
+    mkdirSync(simulatedDist, { recursive: true });
+    const bundledMcp = join(simulatedDist, 'phone-mcp.js');
+    writeFileSync(bundledMcp, '#!/usr/bin/env node\n', 'utf8');
+
+    expect(resolvePhoneMcpScriptPath(simulatedDist)).toBe(bundledMcp);
+
+    // 2. 验证即使 phoneBus 尚未显式 await start()，首次唤醒成员时也会自动等待端口就绪并生成真实存在的脚本路径
+    registry.create({
+      id: 'fe-codex',
+      name: '小前端',
+      avatar: 'lobe:codex',
+      specialty: '前端快手',
+      body: { kind: 'codex' },
+      soulPrompt: '幽默接地气',
+    });
+    registry.create({
+      id: 'dsh-chihuo',
+      name: '肥鱼酱',
+      avatar: 'lobe:deepseek',
+      specialty: '干大白饭',
+      body: { kind: 'codex' },
+      soulPrompt: '嘴馋小鲸鱼',
+    });
+
+    const driver = createScriptedDriver('codex', {
+      'fe-codex': async ({ phoneMcp }) => {
+        expect(phoneMcp.httpUrl).not.toContain(':0/');
+        expect(existsSync(phoneMcp.args[0] ?? '')).toBe(true);
+        const callReply = await callMcpTool(phoneMcp, 'phone_call', {
+          to: 'dsh-chihuo',
+          intent: 'sync',
+          message: '肥鱼酱在干饭吗？',
+        });
+        return `拨通成功:${callReply}`;
+      },
+      'dsh-chihuo': async () => '在吃大白饭 Token 呢！',
+    });
+
+    const hub1 = new FamilyHub({
+      registry,
+      drivers: [driver],
+      storageDir: tempDir,
+    });
+    const unstartedBus = new FamilyPhoneBus(hub1);
+    hub1.attachPhoneBus(unstartedBus);
+
+    const outcome = await hub1.sendMemberMessage({
+      scopeId: 'scope-persist',
+      memberId: 'fe-codex',
+      senderRole: 'human',
+      senderName: '你',
+      message: '给肥鱼酱打个电话',
+      cwd: tempDir,
+    });
+
+    expect(outcome.finalText).toContain('在吃大白饭 Token 呢');
+    expect(hub1.listPhoneCallRecords('scope-persist')).toHaveLength(1);
+
+    await hub1.dispose();
+    await unstartedBus.stop();
+
+    // 3. 重建 FamilyHub 验证通话历史已落盘恢复
+    const hub2 = new FamilyHub({
+      registry,
+      drivers: [],
+      storageDir: tempDir,
+    });
+    const restoredCalls = hub2.listPhoneCallRecords('scope-persist');
+    expect(restoredCalls).toHaveLength(1);
+    expect(restoredCalls[0]?.toMemberName).toBe('肥鱼酱');
+    expect(restoredCalls[0]?.status).toBe('completed');
+    await hub2.dispose();
   });
 });

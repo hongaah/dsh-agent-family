@@ -54,8 +54,6 @@ export class OpenCodeDriver implements BodyDriver {
       },
       onServerRequest: ({ id, method, params }) => {
         if (method === 'session/request_permission') {
-          const requestKey = String(id);
-          pendingPermissions.set(requestKey, id);
           const toolCall =
             params.toolCall && typeof params.toolCall === 'object'
               ? (params.toolCall as Record<string, unknown>)
@@ -83,6 +81,28 @@ export class OpenCodeDriver implements BodyDriver {
             });
           }
 
+          // 成员调用自身挂载的「家庭手机」工具默认直接放行，避免阻塞跨成员协作
+          const serializedToolCall = JSON.stringify(toolCall);
+          if (
+            serializedToolCall.includes('family_phone') ||
+            serializedToolCall.includes('phone_contacts') ||
+            serializedToolCall.includes('phone_call') ||
+            serializedToolCall.includes('phone_group_discuss')
+          ) {
+            const allowOpt =
+              options.find((o) => o.kind === 'allow_always') ??
+              options.find((o) => o.kind === 'allow');
+            peer.respond(id, {
+              outcome: {
+                outcome: 'selected',
+                optionId: allowOpt?.optionId ?? 'allow',
+              },
+            });
+            return;
+          }
+
+          const requestKey = String(id);
+          pendingPermissions.set(requestKey, id);
           activeQueue?.push({
             kind: 'approval_requested',
             requestId: requestKey,

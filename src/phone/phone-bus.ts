@@ -18,6 +18,13 @@ const PHONE_TOOL_SCHEMAS = [
       properties: {},
       additionalProperties: false,
     },
+    annotations: {
+      title: '查看智能体家庭通讯录',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   {
     name: 'phone_call',
@@ -42,6 +49,12 @@ const PHONE_TOOL_SCHEMAS = [
       },
       required: ['to', 'message'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: '拨打家庭成员一对一电话',
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
     },
   },
   {
@@ -72,8 +85,33 @@ const PHONE_TOOL_SCHEMAS = [
       required: ['message'],
       additionalProperties: false,
     },
+    annotations: {
+      title: '在家庭群聊发起讨论',
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
+    },
   },
 ] as const;
+
+/**
+ * 兼容打包后 (`dist/index.js`) 与源码运行 (`src/phone/phone-bus.ts`) 两种目录层级，
+ * 精确定位 `phone-mcp.js` Stdio 代理入口。
+ */
+export function resolvePhoneMcpScriptPath(baseDir: string = import.meta.dirname): string {
+  const candidates = [
+    resolve(baseDir, './phone-mcp.js'),
+    resolve(baseDir, '../dist/phone-mcp.js'),
+    resolve(baseDir, '../../dist/phone-mcp.js'),
+    resolve(baseDir, './phone-mcp-stdio.ts'),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates[0]!;
+}
 
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
@@ -109,6 +147,7 @@ export class FamilyPhoneBus {
   private readonly token: string;
   private server: Server | null = null;
   private port = 0;
+  private startPromise: Promise<number> | null = null;
 
   public constructor(hub: FamilyHub) {
     this.hub = hub;
@@ -119,26 +158,36 @@ export class FamilyPhoneBus {
     if (this.server && this.port > 0) {
       return this.port;
     }
+    if (this.startPromise) {
+      return this.startPromise;
+    }
 
-    const srv = createServer((req, res) => {
-      void this.handleRequest(req, res);
-    });
-
-    await new Promise<void>((resolveListen, rejectListen) => {
-      srv.once('error', rejectListen);
-      srv.listen(0, '127.0.0.1', () => {
-        srv.removeListener('error', rejectListen);
-        resolveListen();
+    this.startPromise = (async () => {
+      const srv = createServer((req, res) => {
+        void this.handleRequest(req, res);
       });
+
+      await new Promise<void>((resolveListen, rejectListen) => {
+        srv.once('error', rejectListen);
+        srv.listen(0, '127.0.0.1', () => {
+          srv.removeListener('error', rejectListen);
+          resolveListen();
+        });
+      });
+
+      const addr = srv.address() as AddressInfo;
+      this.server = srv;
+      this.port = addr.port;
+      return this.port;
+    })().finally(() => {
+      this.startPromise = null;
     });
 
-    const addr = srv.address() as AddressInfo;
-    this.server = srv;
-    this.port = addr.port;
-    return this.port;
+    return this.startPromise;
   }
 
   public async stop(): Promise<void> {
+    this.startPromise = null;
     if (!this.server) return;
     const srv = this.server;
     this.server = null;
@@ -153,9 +202,7 @@ export class FamilyPhoneBus {
     const query = new URLSearchParams({ scopeId, callerId }).toString();
     const httpUrl = `${baseUrl}/mcp?${query}`;
 
-    const distStdio = resolve(import.meta.dirname, '../../dist/phone-mcp.js');
-    const srcStdio = resolve(import.meta.dirname, './phone-mcp-stdio.ts');
-    const scriptPath = existsSync(distStdio) ? distStdio : srcStdio;
+    const scriptPath = resolvePhoneMcpScriptPath(import.meta.dirname);
     const nodeExec = resolveNodeExecutable();
 
     return {
@@ -189,6 +236,12 @@ export class FamilyPhoneBus {
     const parsedUrl = new URL(req.url ?? '/', `http://127.0.0.1:${this.port}`);
     if (parsedUrl.pathname !== '/mcp') {
       sendJson(res, 404, { error: 'Not Found' });
+      return;
+    }
+
+    if (req.method === 'DELETE') {
+      res.writeHead(200);
+      res.end();
       return;
     }
 

@@ -242,6 +242,74 @@ describe('Four Bidirectional Body Drivers', () => {
     await session.dispose();
   });
 
+  it('CodexDriver auto-accepts family_phone MCP elicitation without stalling, sets 600s tool_timeout_sec, and handles external MCP elicitation', async () => {
+    const fakeCodex = writeExecutableScript(
+      tempDir,
+      'mock-codex-mcp.mjs',
+      `
+      import readline from 'node:readline';
+      let mcpToolTimeout = 0;
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.on('line', (line) => {
+        const msg = JSON.parse(line);
+        if (msg.method === 'initialize') {
+          process.stdout.write(JSON.stringify({ id: msg.id, result: { userAgent: 'mock-codex' } }) + '\\n');
+        } else if (msg.method === 'thread/start') {
+          mcpToolTimeout = msg.params.config?.mcp_servers?.family_phone?.tool_timeout_sec ?? 0;
+          process.stdout.write(JSON.stringify({ id: msg.id, result: { thread: { id: 'thr_mcp' } } }) + '\\n');
+        } else if (msg.method === 'turn/start') {
+          process.stdout.write(JSON.stringify({ id: msg.id, result: { turn: { id: 'turn_mcp' } } }) + '\\n');
+          // 模拟 Codex 0.167+ 对内置 family_phone MCP 工具发起 mcpServer/elicitation/request 审批问询
+          process.stdout.write(JSON.stringify({
+            id: 7001,
+            method: 'mcpServer/elicitation/request',
+            params: {
+              threadId: 'thr_mcp',
+              turnId: 'turn_mcp',
+              serverName: 'family_phone',
+              mode: 'form',
+              _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'phone_contacts' }
+            }
+          }) + '\\n');
+        } else if (msg.id === 7001 && msg.result) {
+          const summary = 'action=' + msg.result.action + '|timeout=' + mcpToolTimeout;
+          process.stdout.write(JSON.stringify({
+            method: 'item/agentMessage/delta',
+            params: { threadId: 'thr_mcp', turnId: 'turn_mcp', itemId: 'im1', delta: summary }
+          }) + '\\n');
+          process.stdout.write(JSON.stringify({
+            method: 'turn/completed',
+            params: { threadId: 'thr_mcp', turn: { id: 'turn_mcp', status: 'completed' } }
+          }) + '\\n');
+        }
+      });
+      `
+    );
+
+    const driver = new CodexDriver();
+    const member = makeMember('fe-codex', 'codex', fakeCodex);
+    const controller = new AbortController();
+    const session = await driver.awaken({
+      scopeId: 's1',
+      member,
+      composedSoul: '小前端',
+      cwd: tempDir,
+      phoneMcp: makePhoneSpec(),
+      signal: controller.signal,
+    });
+
+    const events: MemberStreamEvent[] = [];
+    for await (const ev of session.sendTurn('查通讯录', controller.signal)) {
+      events.push(ev);
+    }
+
+    expect(events.some((e) => e.kind === 'approval_requested')).toBe(false);
+    const done = events.find((e) => e.kind === 'turn_done');
+    expect(done?.kind === 'turn_done' ? done.finalText : '').toBe('action=accept|timeout=600');
+
+    await session.dispose();
+  });
+
   it('OpenCodeDriver drives opencode acp, attaches HTTP family_phone MCP, injects soul once, and forwards native permission options verbatim', async () => {
     const fakeOpenCode = writeExecutableScript(
       tempDir,

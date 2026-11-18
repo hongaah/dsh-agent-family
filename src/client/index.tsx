@@ -85,11 +85,13 @@ function FamilySidebarIcon({ size = 16 }: { readonly size?: number }): React.Rea
 
 function readSessionsList(ctx: ClientRuntimeContext): SessionSummaryOption[] {
   const byId = ctx.sessions?.list?.getSnapshot()?.byId ?? {};
-  return Object.values(byId).map((item) => ({
-    id: item.id,
-    title: item.displayTitle || item.id,
-    cwd: item.cwd,
-  }));
+  return Object.values(byId)
+    .filter((item) => !item.id.startsWith('family-'))
+    .map((item) => ({
+      id: item.id,
+      title: item.displayTitle || item.id,
+      cwd: item.cwd,
+    }));
 }
 
 function ComposerFamilyQuickBar({

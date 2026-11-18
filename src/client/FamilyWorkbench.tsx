@@ -238,6 +238,11 @@ export function FamilyWorkbench({
     ];
   }, [state.rooms, selectedScopeId]);
 
+  const scopedCallRecords = useMemo(
+    () => state.callRecords.filter((c) => c.scopeId === selectedScopeId),
+    [state.callRecords, selectedScopeId]
+  );
+
   const activeGroupRoom = useMemo(() => {
     if (target.kind !== 'group') return undefined;
     return scopedRooms.find((r) => r.id === target.groupId) ?? scopedRooms[0];
@@ -1298,7 +1303,7 @@ export function FamilyWorkbench({
                   data-active={String(inspectorTab === 'calls')}
                   onClick={() => setInspectorTab('calls')}
                 >
-                  手机通话 ({state.callRecords.length})
+                  手机通话 ({scopedCallRecords.length})
                 </button>
                 <button
                   type="button"
@@ -1313,7 +1318,7 @@ export function FamilyWorkbench({
 
             <div style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
               {inspectorTab === 'calls' ? (
-                state.callRecords.length === 0 ? (
+                scopedCallRecords.length === 0 ? (
                   <div
                     style={{
                       padding: '24px 10px',
@@ -1330,7 +1335,7 @@ export function FamilyWorkbench({
                     </div>
                   </div>
                 ) : (
-                  [...state.callRecords].reverse().map((call) => (
+                  [...scopedCallRecords].reverse().map((call) => (
                     <div
                       key={call.id}
                       style={{

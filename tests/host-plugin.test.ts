@@ -286,6 +286,8 @@ describe('Cordis Host Plugin (Tools, SystemPrompt, @Mention Pre-Step, Web API & 
     let seq = 0;
     let turnNo = 0;
     const storedEvents: Array<{ seq: number; type: string; data: Record<string, unknown> }> = [];
+    const scopedTools = new Map<string, DshRawToolDefinition>();
+    const restrictedDeny: string[] = [];
     let shouldHangNextTurn = false;
 
     const fakeChildSession = {
@@ -307,7 +309,14 @@ describe('Cordis Host Plugin (Tools, SystemPrompt, @Mention Pre-Step, Web API & 
         },
       },
       tools: {
-        register: () => () => undefined,
+        register: (tool: DshRawToolDefinition) => {
+          scopedTools.set(tool.name, tool);
+          return () => undefined;
+        },
+        restrict: (filter: { deny?: readonly string[] }) => {
+          restrictedDeny.push(...(filter.deny ?? []));
+          return () => undefined;
+        },
       },
       on: (eventName: string, cb: (...args: unknown[]) => void) => {
         if (eventName === 'session/event') {
@@ -474,5 +483,12 @@ describe('Cordis Host Plugin (Tools, SystemPrompt, @Mention Pre-Step, Web API & 
     });
     const j3 = (await r3.json()) as { finalText: string };
     expect(j3.finalText).toBe('肥鱼酱第3轮:你在吗');
+
+    // 验证 DSH 原生成员已挂载随身手机工具（含长超时）且屏蔽了主统筹专用工具
+    expect(scopedTools.has('phone_contacts')).toBe(true);
+    expect(scopedTools.has('phone_call')).toBe(true);
+    expect(scopedTools.get('phone_call')?.timeoutMs).toBeGreaterThanOrEqual(600_000);
+    expect(restrictedDeny).toContain('family_assign');
+    expect(restrictedDeny).toContain('family_group_discuss');
   });
 });
