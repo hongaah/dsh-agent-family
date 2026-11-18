@@ -1,9 +1,15 @@
+import { existsSync, readFileSync } from 'node:fs';
+
 import { resolveBodyExecutable } from '../core/cli-locator.ts';
 import {
   decidePermissionAction,
   extractAskUserPrompt,
 } from '../core/permission-policy.ts';
-import type { MemberStreamEvent, PermissionMode } from '../core/types.ts';
+import type {
+  FamilyMessageAttachment,
+  MemberStreamEvent,
+  PermissionMode,
+} from '../core/types.ts';
 import {
   AsyncEventQueue,
   type AwakenMemberContext,
@@ -281,7 +287,11 @@ export class ClaudeDriver implements BodyDriver {
         }
         return true;
       },
-      sendTurn: (prompt: string, signal: AbortSignal): AsyncIterable<MemberStreamEvent> => {
+      sendTurn: (
+        prompt: string,
+        signal: AbortSignal,
+        attachments?: readonly FamilyMessageAttachment[]
+      ): AsyncIterable<MemberStreamEvent> => {
         if (!proc.isAlive()) {
           throw new Error('Claude Code 身体进程已离线。');
         }
@@ -301,12 +311,45 @@ export class ClaudeDriver implements BodyDriver {
         }
         signal.addEventListener('abort', onAbort, { once: true });
 
+        const contentBlocks: Array<Record<string, unknown>> = [];
+        if (attachments && attachments.length > 0) {
+          for (const att of attachments) {
+            if (
+              att.kind === 'image' &&
+              att.sizeBytes <= 5 * 1024 * 1024 &&
+              existsSync(att.filePath) &&
+              (att.mimeType === 'image/png' ||
+                att.mimeType === 'image/jpeg' ||
+                att.mimeType === 'image/jpg' ||
+                att.mimeType === 'image/webp' ||
+                att.mimeType === 'image/gif')
+            ) {
+              try {
+                const b64 = readFileSync(att.filePath).toString('base64');
+                const mediaType =
+                  att.mimeType === 'image/jpg' ? 'image/jpeg' : att.mimeType;
+                contentBlocks.push({
+                  type: 'image',
+                  source: {
+                    type: 'base64',
+                    media_type: mediaType,
+                    data: b64,
+                  },
+                });
+              } catch {
+                // fallback to local path text pointer in prompt
+              }
+            }
+          }
+        }
+        contentBlocks.push({ type: 'text', text: prompt });
+
         try {
           proc.writeJsonLine({
             type: 'user',
             message: {
               role: 'user',
-              content: [{ type: 'text', text: prompt }],
+              content: contentBlocks,
             },
           });
         } catch (err) {

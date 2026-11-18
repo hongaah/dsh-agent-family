@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { formatAttachmentsForAgentPrompt } from './attachment-store.ts';
 import type { FamilyHub } from './family-hub.ts';
 import { resolveHumanDisplayLabel } from './family-profile.ts';
 import type { MemberRegistry } from './member-registry.ts';
@@ -9,6 +10,7 @@ import { MemberTurnStallError } from './turn-watchdog.ts';
 import type {
   FamilyGroupRoom,
   FamilyMember,
+  FamilyMessageAttachment,
   GroupMessage,
   GroupStreamingDraft,
   WorkspaceFileChange,
@@ -45,16 +47,33 @@ function computeRoomUnreadCount(room: MutableGroupRoom): number {
 
 export function extractMemberMentions(
   text: string,
-  validMemberIds: ReadonlySet<string>
+  validMemberIds: ReadonlySet<string>,
+  membersByName?: ReadonlyArray<{ readonly id: string; readonly name: string }>
 ): string[] {
   const found: string[] = [];
+  const addId = (id: string) => {
+    if (validMemberIds.has(id) && !found.includes(id)) {
+      found.push(id);
+    }
+  };
+
   const regex = /@([a-z][a-z0-9-]{0,31})\b/gu;
   for (const match of text.matchAll(regex)) {
     const candidate = match[1];
-    if (candidate && validMemberIds.has(candidate) && !found.includes(candidate)) {
-      found.push(candidate);
+    if (candidate) addId(candidate);
+  }
+
+  if (membersByName && membersByName.length > 0 && text.includes('@')) {
+    const sorted = [...membersByName].sort((a, b) => b.name.length - a.name.length);
+    for (const m of sorted) {
+      const cleanName = m.name.trim();
+      if (!cleanName) continue;
+      if (text.includes(`@${cleanName}`)) {
+        addId(m.id);
+      }
     }
   }
+
   return found;
 }
 
@@ -196,6 +215,7 @@ export class GroupChatEngine {
     readonly senderName: string;
     readonly senderAvatar?: string;
     readonly content: string;
+    readonly attachments?: readonly FamilyMessageAttachment[];
     readonly cwd: string;
     readonly blockedMemberIds?: readonly string[];
     readonly parentCallChain?: readonly string[];
@@ -215,7 +235,7 @@ export class GroupChatEngine {
     const memberIdSet = new Set(activeMembers.map((m) => m.id));
     const blockedSet = new Set(input.blockedMemberIds ?? []);
 
-    const mentions = extractMemberMentions(input.content, memberIdSet);
+    const mentions = extractMemberMentions(input.content, memberIdSet, activeMembers);
     const triggerMsg: GroupMessage = {
       id: randomUUID(),
       groupId: room.id,
@@ -224,6 +244,9 @@ export class GroupChatEngine {
       senderAvatar: input.senderAvatar ?? 'human',
       content: input.content.trim(),
       mentions,
+      ...(input.attachments && input.attachments.length > 0
+        ? { attachments: input.attachments }
+        : {}),
       createdAt: new Date().toISOString(),
     };
     room.messages.push(triggerMsg);
@@ -310,6 +333,7 @@ export class GroupChatEngine {
           allowPass
         );
 
+        const unreadAttachments = unreadMessages.flatMap((m) => m.attachments ?? []);
         let replyText = '';
         let turnChangedFiles: readonly WorkspaceFileChange[] = [];
         try {
@@ -319,6 +343,7 @@ export class GroupChatEngine {
             senderRole: 'peer',
             senderName: room.title,
             message: promptForSpeaker,
+            ...(unreadAttachments.length > 0 ? { attachments: unreadAttachments } : {}),
             cwd: input.cwd,
             callChain: input.parentCallChain ?? [],
             activeGroupHold: room.id,
@@ -389,9 +414,11 @@ export class GroupChatEngine {
             : replyText;
 
         substantiveTurns += 1;
-        const replyMentions = extractMemberMentions(effectiveReplyText, memberIdSet).filter(
-          (id) => id !== speaker.id
-        );
+        const replyMentions = extractMemberMentions(
+          effectiveReplyText,
+          memberIdSet,
+          activeMembers
+        ).filter((id) => id !== speaker.id);
         const speakerMsg: GroupMessage = {
           id: randomUUID(),
           groupId: room.id,
@@ -470,11 +497,15 @@ export class GroupChatEngine {
     const humanLabel = resolveHumanDisplayLabel(this.hub.getSharedProfile());
     const transcript = unread
       .map((m) => {
+        const attNote =
+          m.attachments && m.attachments.length > 0
+            ? `\n${formatAttachmentsForAgentPrompt(m.attachments)}`
+            : '';
         if (m.senderId === 'human') {
-          return `[${humanLabel}]: ${m.content}`;
+          return `[${humanLabel}]: ${m.content}${attNote}`;
         }
         const handle = m.senderId === 'lead' ? '' : ` (@${m.senderId})`;
-        return `[${m.senderName}${handle}]: ${m.content}`;
+        return `[${m.senderName}${handle}]: ${m.content}${attNote}`;
       })
       .join('\n\n');
 

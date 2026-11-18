@@ -8,6 +8,7 @@ import {
   Hash,
   Home,
   Maximize2,
+  MoreHorizontal,
   PanelRight,
   Pencil,
   PhoneCall,
@@ -29,6 +30,10 @@ import { ChangedFilesDeliverableCard } from './ChangedFilesDeliverableCard.tsx';
 import { CommandPalette } from './CommandPalette.tsx';
 import { FamilyProfileSheet } from './FamilyProfileSheet.tsx';
 import { MemberAvatar } from './MemberAvatar.tsx';
+import {
+  MemberHoverCardWrap,
+  MessageAttachmentsStrip,
+} from './MemberHoverChip.tsx';
 import { MemberSheet } from './MemberSheet.tsx';
 import {
   formatShortModelBadge,
@@ -169,6 +174,130 @@ function HandoffPopoverButton({
   );
 }
 
+function StageMoreActionsMenu({
+  onEdit,
+  onResetContext,
+  onClearScreen,
+  hasMessages,
+}: {
+  readonly onEdit?: () => void;
+  readonly onResetContext?: () => void;
+  readonly onClearScreen: () => void;
+  readonly hasMessages: boolean;
+}): React.ReactElement {
+  const [open, setOpen] = useState<boolean>(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (ev: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(ev.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative', flexShrink: 0 }}>
+      <button
+        type="button"
+        className="sh-btn sh-btn-ghost sh-btn-icon"
+        style={{ width: 26, height: 26 }}
+        title="更多操作（编辑设定 / 重启上下文 / 清空屏幕记录）"
+        aria-label="更多操作"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <MoreHorizontal size={15} />
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          style={{
+            position: 'absolute',
+            right: 0,
+            top: 'calc(100% + 5px)',
+            width: 224,
+            padding: 5,
+            borderRadius: 10,
+            border: '1px solid var(--sh-border)',
+            background: 'var(--sh-popover)',
+            color: 'var(--sh-popover-fg)',
+            boxShadow: 'var(--sh-shadow-lg)',
+            zIndex: 55,
+          }}
+        >
+          {onEdit && (
+            <button
+              type="button"
+              className="sh-menu-item"
+              onClick={() => {
+                setOpen(false);
+                onEdit();
+              }}
+            >
+              <Pencil size={13} style={{ flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: 550, fontSize: 12 }}>编辑成员设定</div>
+                <div style={{ fontSize: 10.5, color: 'var(--sh-muted-fg)' }}>
+                  修改称呼、头像、身体与灵魂准则
+                </div>
+              </div>
+            </button>
+          )}
+
+          {onResetContext && (
+            <button
+              type="button"
+              className="sh-menu-item"
+              onClick={() => {
+                setOpen(false);
+                onResetContext();
+              }}
+            >
+              <RotateCcw size={13} style={{ flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: 550, fontSize: 12 }}>重启上下文记忆</div>
+                <div style={{ fontSize: 10.5, color: 'var(--sh-muted-fg)' }}>
+                  重启底层 CLI 进程开启全新会话记忆
+                </div>
+              </div>
+            </button>
+          )}
+
+          {hasMessages && (
+            <button
+              type="button"
+              className="sh-menu-item"
+              onClick={() => {
+                setOpen(false);
+                onClearScreen();
+              }}
+            >
+              <Eraser size={13} style={{ flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: 550, fontSize: 12 }}>清空屏幕聊天记录</div>
+                <div style={{ fontSize: 10.5, color: 'var(--sh-muted-fg)' }}>
+                  仅擦除面板展示气泡，不删成员配置
+                </div>
+              </div>
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function FamilyWorkbench({
   sessions,
   onBackToConversation,
@@ -190,7 +319,6 @@ export function FamilyWorkbench({
   const [target, setTarget] = useState<LoungeTarget>(
     () => navigationOrder?.target ?? { kind: 'group', groupId: 'family-main' }
   );
-  const [sendFresh, setSendFresh] = useState<boolean>(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState<boolean>(() =>
     !isSplitMode && (typeof window !== 'undefined' ? window.innerWidth >= 1120 : true)
@@ -256,6 +384,14 @@ export function FamilyWorkbench({
     () => new Set(state.members.map((m) => m.id)),
     [state.members]
   );
+
+  const membersByIdMap = useMemo(() => {
+    const map = new Map<string, FamilyMember>();
+    for (const m of state.members) {
+      map.set(m.id, m);
+    }
+    return map;
+  }, [state.members]);
 
   const snapshotByMember = useMemo(() => {
     const map = new Map<string, (typeof state.snapshots)[number]>();
@@ -365,7 +501,11 @@ export function FamilyWorkbench({
     setSheetOpen(true);
   };
 
-  const dispatchMessageNonBlocking = (messageText: string, overrideTarget?: LoungeTarget) => {
+  const dispatchMessageNonBlocking = (
+    messageText: string,
+    overrideTarget?: LoungeTarget,
+    attachmentIds?: readonly string[]
+  ) => {
     const effectiveTarget = overrideTarget ?? target;
     setErrorBanner(null);
     stickToBottomRef.current = true;
@@ -377,6 +517,7 @@ export function FamilyWorkbench({
           scopeId: selectedScopeId,
           groupId: effectiveTarget.groupId,
           content: messageText,
+          ...(attachmentIds && attachmentIds.length > 0 ? { attachmentIds } : {}),
           cwd: currentSessionMeta?.cwd,
         })
         .catch((err: unknown) => {
@@ -385,15 +526,13 @@ export function FamilyWorkbench({
       return;
     }
 
-    const useFresh = sendFresh;
-    setSendFresh(false);
     void familyClientApi
       .sendDirectChat({
         scopeId: selectedScopeId,
         memberId: effectiveTarget.memberId,
         message: messageText,
+        ...(attachmentIds && attachmentIds.length > 0 ? { attachmentIds } : {}),
         cwd: currentSessionMeta?.cwd,
-        fresh: useFresh,
       })
       .catch((err: unknown) => {
         setErrorBanner(err instanceof Error ? err.message : String(err));
@@ -549,12 +688,13 @@ export function FamilyWorkbench({
             <button
               type="button"
               className="sh-btn sh-btn-outline"
-              style={{ height: 30, padding: '0 10px', color: 'var(--sh-muted-fg)', gap: 10 }}
+              style={{ height: 28, padding: '0 9px', color: 'var(--sh-muted-fg)', gap: 7 }}
               onClick={() => setPaletteOpen(true)}
+              title="搜索成员、切换群聊或执行家庭指令 (⌘K)"
             >
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
                 <Search size={13} />
-                <span>跳转或执行命令…</span>
+                <span className="sh-cmd-search-text">跳转或执行命令…</span>
               </span>
               <span className="sh-kbd">⌘K</span>
             </button>
@@ -620,62 +760,60 @@ export function FamilyWorkbench({
         </div>
       </header>
 
-      {/* 右侧同屏分栏模式专属：顶部紧凑群聊 & 家庭成员快捷切换栏（让出 100% 聊天宽度） */}
-      {isSplitMode && (
-        <div className="dshfam-split-bar">
-          {scopedRooms.map((room) => {
-            const active = target.kind === 'group' && target.groupId === room.id;
-            return (
-              <button
-                key={room.id}
-                type="button"
-                className="dshfam-split-pill"
-                data-active={String(active)}
-                onClick={() => setTarget({ kind: 'group', groupId: room.id })}
-              >
-                {room.running ? (
-                  <span className="dshfam-live-green-dot" />
-                ) : room.id === 'family-main' ? (
-                  <Users size={12} />
-                ) : (
-                  <Hash size={12} />
-                )}
-                <span>{room.title.replace(/^🏠\s*/u, '')}</span>
-                {room.unreadCount > 0 && !active && (
-                  <span className="sh-unread-badge">{room.unreadCount}</span>
-                )}
-              </button>
-            );
-          })}
+      {/* 右侧同屏分栏 & 窄屏自适应顶部群聊/家庭成员快捷切换栏 */}
+      <div className={`dshfam-split-bar ${isSplitMode ? '' : 'dshfam-mobile-switch-bar'}`.trim()}>
+        {scopedRooms.map((room) => {
+          const active = target.kind === 'group' && target.groupId === room.id;
+          return (
+            <button
+              key={room.id}
+              type="button"
+              className="dshfam-split-pill"
+              data-active={String(active)}
+              onClick={() => setTarget({ kind: 'group', groupId: room.id })}
+            >
+              {room.running ? (
+                <span className="dshfam-live-green-dot" />
+              ) : room.id === 'family-main' ? (
+                <Users size={12} />
+              ) : (
+                <Hash size={12} />
+              )}
+              <span>{room.title.replace(/^🏠\s*/u, '')}</span>
+              {room.unreadCount > 0 && !active && (
+                <span className="sh-unread-badge">{room.unreadCount}</span>
+              )}
+            </button>
+          );
+        })}
 
-          <span style={{ width: 1, height: 15, background: 'var(--sh-border)', flexShrink: 0 }} />
+        <span style={{ width: 1, height: 15, background: 'var(--sh-border)', flexShrink: 0 }} />
 
-          {state.members.map((m) => {
-            const active = target.kind === 'member' && target.memberId === m.id;
-            const snap = snapshotByMember.get(m.id);
-            const memberBusy =
-              snap?.state === 'working' ||
-              snap?.state === 'in_call' ||
-              snap?.state === 'awaiting_approval';
-            const unread = snap?.unreadCount ?? 0;
-            return (
-              <button
-                key={m.id}
-                type="button"
-                className="dshfam-split-pill"
-                data-active={String(active)}
-                style={!m.enabled ? { opacity: 0.5 } : undefined}
-                onClick={() => setTarget({ kind: 'member', memberId: m.id })}
-              >
-                <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} alt={m.name} size={15} />
-                <span>{m.name}</span>
-                {memberBusy && <span className="dshfam-live-green-dot" />}
-                {unread > 0 && !active && <span className="sh-unread-badge">{unread}</span>}
-              </button>
-            );
-          })}
-        </div>
-      )}
+        {state.members.map((m) => {
+          const active = target.kind === 'member' && target.memberId === m.id;
+          const snap = snapshotByMember.get(m.id);
+          const memberBusy =
+            snap?.state === 'working' ||
+            snap?.state === 'in_call' ||
+            snap?.state === 'awaiting_approval';
+          const unread = snap?.unreadCount ?? 0;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              className="dshfam-split-pill"
+              data-active={String(active)}
+              style={!m.enabled ? { opacity: 0.5 } : undefined}
+              onClick={() => setTarget({ kind: 'member', memberId: m.id })}
+            >
+              <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} alt={m.name} size={15} />
+              <span>{m.name}</span>
+              {memberBusy && <span className="dshfam-live-green-dot" />}
+              {unread > 0 && !active && <span className="sh-unread-badge">{unread}</span>}
+            </button>
+          );
+        })}
+      </div>
 
       {/* 原生权限举手待批示横幅 */}
       <ApprovalBanner approvals={state.pendingApprovals} />
@@ -981,43 +1119,50 @@ export function FamilyWorkbench({
           {target.kind === 'group' && activeGroupRoom ? (
             <>
               <div className="dshfam-stage-bar">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                  <span className="dshfam-avatar" style={{ width: 30, height: 30 }}>
-                    <Users size={15} />
+                <div className="dshfam-stage-identity">
+                  <span className="dshfam-avatar" style={{ width: 28, height: 28 }}>
+                    <Users size={14} />
                   </span>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontWeight: 600, fontSize: 14 }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                      <span
+                        style={{
+                          fontWeight: 600,
+                          fontSize: 13.5,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
                         {activeGroupRoom.title.replace(/^🏠\s*/u, '')}
                       </span>
-                      <span className="sh-badge">{groupParticipantMembers.length} 位在岗成员</span>
+                      <span className="sh-badge" style={{ flexShrink: 0 }}>
+                        {groupParticipantMembers.length} 人
+                      </span>
                     </div>
-                    <div style={{ fontSize: 11.5, color: 'var(--sh-muted-fg)' }}>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--sh-muted-fg)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
                       {activeGroupRoom.activeSpeakerId
-                        ? `@${activeGroupRoom.activeSpeakerId} 正在说话…`
+                        ? `${membersByIdMap.get(activeGroupRoom.activeSpeakerId)?.name ?? activeGroupRoom.activeSpeakerId} 正在说话…`
                         : activeGroupRoom.lastPassMemberName
                           ? `${activeGroupRoom.lastPassMemberName} 已阅（微笑旁听）`
-                          : '一家人唠嗑闲聊与技术协作空间 · 支持 @点名互动'}
+                          : '唠嗑闲聊与技术协作 · 支持 @名称 点名与发附件'}
                     </div>
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div className="dshfam-stage-controls">
                   <GroupMembersModelPopover
                     members={groupParticipantMembers}
                     onUpdated={() => void refresh()}
                   />
-                  {activeGroupRoom.messages.length > 0 && (
-                    <button
-                      type="button"
-                      className="sh-btn sh-btn-ghost sh-btn-sm"
-                      title="清空本群界面展示记录"
-                      onClick={() => void handleClearCurrentHistory()}
-                    >
-                      <Eraser size={13} />
-                      <span>清空记录</span>
-                    </button>
-                  )}
                   {activeGroupRoom.running && (
                     <button
                       type="button"
@@ -1030,9 +1175,13 @@ export function FamilyWorkbench({
                       }
                     >
                       <Square size={11} />
-                      <span>暂停讨论</span>
+                      <span>暂停</span>
                     </button>
                   )}
+                  <StageMoreActionsMenu
+                    hasMessages={activeGroupRoom.messages.length > 0}
+                    onClearScreen={() => void handleClearCurrentHistory()}
+                  />
                 </div>
               </div>
 
@@ -1114,17 +1263,29 @@ export function FamilyWorkbench({
                           <div className="sh-msg-card">
                             <div className="sh-msg-head">
                               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <span style={{ fontWeight: 600, fontSize: 12.5 }}>{msg.senderName}</span>
-                                {!isHuman && <span className="sh-badge">@{msg.senderId}</span>}
-                                {senderMember && (
-                                  <span className="sh-badge">{senderMember.body.kind}</span>
+                                {senderMember ? (
+                                  <MemberHoverCardWrap member={senderMember}>
+                                    <span
+                                      className="sh-stage-member-name-trigger"
+                                      style={{ fontSize: 12.5, cursor: 'pointer' }}
+                                      onClick={() =>
+                                        setTarget({ kind: 'member', memberId: senderMember.id })
+                                      }
+                                    >
+                                      {senderMember.name}
+                                    </span>
+                                  </MemberHoverCardWrap>
+                                ) : (
+                                  <span style={{ fontWeight: 600, fontSize: 12.5 }}>
+                                    {msg.senderName}
+                                  </span>
                                 )}
                               </div>
                               <div className="sh-msg-actions">
                                 <CopyMessageButton text={msg.content} />
                                 {!isHuman && (
                                   <HandoffPopoverButton
-                                    sourceAuthor={msg.senderName}
+                                    sourceAuthor={senderMember?.name ?? msg.senderName}
                                     content={msg.content}
                                     candidates={enabledMembers.filter((m) => m.id !== msg.senderId)}
                                     onHandoff={handleHandoffToMember}
@@ -1135,13 +1296,22 @@ export function FamilyWorkbench({
                             <RichMessageContent
                               content={msg.content}
                               validMemberIds={validMemberIdSet}
+                              membersById={membersByIdMap}
                               knownFilePaths={knownScopeFilePaths}
                               onSelectMember={(mId) => setTarget({ kind: 'member', memberId: mId })}
                               onOpenFile={onOpenWorkspaceFile ? handleOpenFileInWorkspace : undefined}
                             />
+                            <MessageAttachmentsStrip
+                              attachments={msg.attachments}
+                              onOpenFile={
+                                onOpenWorkspaceFile
+                                  ? (fp) => handleOpenFileInWorkspace(fp)
+                                  : undefined
+                              }
+                            />
                             {msg.changedFiles && msg.changedFiles.length > 0 && (
                               <ChangedFilesDeliverableCard
-                                authorLabel={`${msg.senderName} (@${msg.senderId})`}
+                                authorLabel={senderMember?.name ?? msg.senderName}
                                 files={msg.changedFiles}
                                 onOpenFile={onOpenWorkspaceFile ? handleOpenFileInWorkspace : undefined}
                                 onHandoffToMainSession={
@@ -1175,9 +1345,6 @@ export function FamilyWorkbench({
                               <span style={{ fontWeight: 600, fontSize: 12.5 }}>
                                 {activeGroupRoom.streamingDraft.senderName}
                               </span>
-                              <span className="sh-badge">
-                                @{activeGroupRoom.streamingDraft.senderId}
-                              </span>
                               {activeGroupRoom.streamingDraft.statusSummary && (
                                 <span className="sh-badge">
                                   {activeGroupRoom.streamingDraft.statusSummary}
@@ -1190,6 +1357,7 @@ export function FamilyWorkbench({
                               content={activeGroupRoom.streamingDraft.content}
                               streaming
                               validMemberIds={validMemberIdSet}
+                              membersById={membersByIdMap}
                               knownFilePaths={knownScopeFilePaths}
                               onOpenFile={onOpenWorkspaceFile ? handleOpenFileInWorkspace : undefined}
                             />
@@ -1225,13 +1393,13 @@ export function FamilyWorkbench({
               )}
 
               <SmartComposer
+                scopeId={selectedScopeId}
+                cwd={currentSessionMeta?.cwd}
                 mode="group"
-                placeholder="在家庭群里随口聊聊家常，或输入 @ 点名讨论正事…"
+                placeholder="在家庭群里随口聊聊家常，输入 @ 点名成员/引用文件，或粘贴/上传附件…"
                 members={groupParticipantMembers}
                 isBusy={activeGroupRoom.running}
-                sendFresh={false}
-                onToggleFresh={() => undefined}
-                onSubmit={(msg) => dispatchMessageNonBlocking(msg)}
+                onSubmit={(msg, attIds) => dispatchMessageNonBlocking(msg, undefined, attIds)}
                 onStop={() =>
                   void familyClientApi.interrupt({
                     scopeId: selectedScopeId,
@@ -1241,6 +1409,9 @@ export function FamilyWorkbench({
                 onSlashCommand={(cmd) => {
                   if (cmd === 'clear') void handleClearCurrentHistory();
                 }}
+                onOpenFile={
+                  onOpenWorkspaceFile ? (fp) => handleOpenFileInWorkspace(fp) : undefined
+                }
                 disabled={groupParticipantMembers.length === 0}
                 externalInsertText={composerInsert}
               />
@@ -1248,27 +1419,35 @@ export function FamilyWorkbench({
           ) : activeMember ? (
             <>
               <div className="dshfam-stage-bar">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                <div className="dshfam-stage-identity">
                   <MemberAvatar
                     avatar={activeMember.avatar}
                     bodyKind={activeMember.body.kind}
                     alt={activeMember.name}
-                    size={32}
+                    size={28}
                   />
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                      <span style={{ fontWeight: 600, fontSize: 14 }}>{activeMember.name}</span>
-                      <span className="sh-badge">@{activeMember.id}</span>
-                      <span className="sh-badge">{activeMember.body.kind}</span>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                      <MemberHoverCardWrap
+                        member={activeMember}
+                        statusText={
+                          activeMemberSnapshot?.statusText ||
+                          STATE_LABELS[activeMemberSnapshot?.state ?? 'sleeping']
+                        }
+                      >
+                        <span className="sh-stage-member-name-trigger">
+                          {activeMember.name}
+                        </span>
+                      </MemberHoverCardWrap>
                       {(activeMemberSnapshot?.queueLength ?? 0) > 0 && (
-                        <span className="sh-badge">
+                        <span className="sh-badge" style={{ flexShrink: 0 }}>
                           排队 {activeMemberSnapshot?.queueLength}
                         </span>
                       )}
                     </div>
                     <div
                       style={{
-                        fontSize: 11.5,
+                        fontSize: 11,
                         color: 'var(--sh-muted-fg)',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
@@ -1280,7 +1459,7 @@ export function FamilyWorkbench({
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                <div className="dshfam-stage-controls">
                   <MemberPermissionQuickPopover
                     member={activeMember}
                     onUpdated={() => void refresh()}
@@ -1289,35 +1468,14 @@ export function FamilyWorkbench({
                     member={activeMember}
                     onUpdated={() => void refresh()}
                   />
-                  <button
-                    type="button"
-                    className="sh-btn sh-btn-ghost sh-btn-sm"
-                    onClick={() => openEditSheet(activeMember)}
-                  >
-                    <Pencil size={12} />
-                    <span>编辑</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="sh-btn sh-btn-ghost sh-btn-sm"
-                    title="休眠当前身体，下次派活开启全新上下文"
-                    onClick={() =>
+                  <StageMoreActionsMenu
+                    onEdit={() => openEditSheet(activeMember)}
+                    onResetContext={() =>
                       void familyClientApi.resetSession(selectedScopeId, activeMember.id)
                     }
-                  >
-                    <RotateCcw size={12} />
-                    <span>重置身体</span>
-                  </button>
-                  {(activeMemberSnapshot?.entries.length ?? 0) > 0 && (
-                    <button
-                      type="button"
-                      className="sh-btn sh-btn-ghost sh-btn-sm"
-                      onClick={() => void handleClearCurrentHistory()}
-                    >
-                      <Eraser size={12} />
-                      <span>清屏</span>
-                    </button>
-                  )}
+                    onClearScreen={() => void handleClearCurrentHistory()}
+                    hasMessages={(activeMemberSnapshot?.entries.length ?? 0) > 0}
+                  />
                 </div>
               </div>
 
@@ -1420,6 +1578,7 @@ export function FamilyWorkbench({
                               content={entry.content}
                               streaming={Boolean(entry.streaming)}
                               validMemberIds={validMemberIdSet}
+                              membersById={membersByIdMap}
                               knownFilePaths={knownScopeFilePaths}
                               onSelectMember={(mId) => setTarget({ kind: 'member', memberId: mId })}
                               onOpenFile={onOpenWorkspaceFile ? handleOpenFileInWorkspace : undefined}
@@ -1429,9 +1588,17 @@ export function FamilyWorkbench({
                               {entry.statusSummary || '正在思考与推进…'}
                             </div>
                           )}
+                          <MessageAttachmentsStrip
+                            attachments={entry.attachments}
+                            onOpenFile={
+                              onOpenWorkspaceFile
+                                ? (fp) => handleOpenFileInWorkspace(fp)
+                                : undefined
+                            }
+                          />
                           {!entry.streaming && entry.changedFiles && entry.changedFiles.length > 0 && (
                             <ChangedFilesDeliverableCard
-                              authorLabel={`${activeMember.name} (@${activeMember.id})`}
+                              authorLabel={activeMember.name}
                               files={entry.changedFiles}
                               onOpenFile={onOpenWorkspaceFile ? handleOpenFileInWorkspace : undefined}
                               onHandoffToMainSession={
@@ -1468,17 +1635,17 @@ export function FamilyWorkbench({
               )}
 
               <SmartComposer
+                scopeId={selectedScopeId}
+                cwd={currentSessionMeta?.cwd}
                 mode="member"
                 placeholder={
                   !activeMember.enabled
                     ? `${activeMember.name} 当前休假停用中，可在右侧开启在岗`
-                    : `交代给 ${activeMember.name} (@${activeMember.id}) 的工作…`
+                    : `交代给 ${activeMember.name} 的工作（支持 @文件、粘贴截图或上传附件）…`
                 }
                 members={enabledMembers}
                 isBusy={Boolean(isCurrentStageBusy)}
-                sendFresh={sendFresh}
-                onToggleFresh={setSendFresh}
-                onSubmit={(msg) => dispatchMessageNonBlocking(msg)}
+                onSubmit={(msg, attIds) => dispatchMessageNonBlocking(msg, undefined, attIds)}
                 onStop={() =>
                   void familyClientApi.interrupt({
                     scopeId: selectedScopeId,
@@ -1491,6 +1658,9 @@ export function FamilyWorkbench({
                     void familyClientApi.resetSession(selectedScopeId, activeMember.id);
                   }
                 }}
+                onOpenFile={
+                  onOpenWorkspaceFile ? (fp) => handleOpenFileInWorkspace(fp) : undefined
+                }
                 disabled={!activeMember.enabled}
                 externalInsertText={composerInsert}
               />
@@ -1719,7 +1889,7 @@ export function FamilyWorkbench({
                         onClick={() =>
                           setComposerInsert((prev) => ({
                             seq: (prev?.seq ?? 0) + 1,
-                            text: `@${m.id} `,
+                            text: `@${m.name} `,
                           }))
                         }
                       >

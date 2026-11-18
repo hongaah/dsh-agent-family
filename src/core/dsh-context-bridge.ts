@@ -1,3 +1,7 @@
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import type { PendingMainSyncSummary, WorkspaceFileChange } from './types.ts';
 
 export interface BridgeableSessionEvent {
@@ -21,9 +25,20 @@ export interface RecordCollaborationActivityInput {
   readonly changedFiles?: readonly WorkspaceFileChange[];
 }
 
+interface CollaborationLogRecord {
+  readonly timeIso: string;
+  readonly actorLabel: string;
+  readonly userPrompt?: string;
+  readonly bodyText: string;
+  readonly changedFiles: readonly WorkspaceFileChange[];
+}
+
 interface PendingSessionLedger {
+  readonly batchId: string;
   readonly filesByPath: Map<string, WorkspaceFileChange>;
-  readonly notes: string[];
+  readonly records: CollaborationLogRecord[];
+  receiptFilePath: string;
+  receiptTitle: string;
   updatedAt: string;
 }
 
@@ -32,7 +47,7 @@ const CASUAL_CHITCHAT_RE =
 
 export function isCasualGreetingPrompt(prompt: string): boolean {
   const clean = prompt
-    .replace(/@[a-z][a-z0-9-]{0,31}\b/giu, '')
+    .replace(/@[^\s@]+/giu, '')
     .trim();
   if (!clean) return true;
   return clean.length <= 24 && CASUAL_CHITCHAT_RE.test(clean);
@@ -42,6 +57,7 @@ function stripInternalXmlBlocks(text: string): string {
   return text
     .replace(/<family_direct_mention>[\s\S]*?<\/family_direct_mention>/gu, '')
     .replace(/<family_collaboration_receipt>[\s\S]*?<\/family_collaboration_receipt>/gu, '')
+    .replace(/<family_collaboration_index>[\s\S]*?<\/family_collaboration_index>/gu, '')
     .replace(/<family_workspace_changes>[\s\S]*?<\/family_workspace_changes>/gu, '')
     .replace(/<dsh_session_context>[\s\S]*?<\/dsh_session_context>/gu, '')
     .trim();
@@ -100,25 +116,44 @@ function formatChangeStats(change: WorkspaceFileChange): string {
   return '';
 }
 
+function sanitizePathSegment(raw: string): string {
+  return raw.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5.-]/gu, '_').slice(0, 64) || 'session';
+}
+
+function formatTimeStampForFile(date: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
 /**
  * 负责 DSH 主工作台会话与家庭成员之间的双向轻量上下文桥接：
- * 1. 正向（DSH -> 家庭成员）：按 `(sessionId, memberId)` 维护游标 `lastSyncedSeq`，仅注入自上次同步以来的增量核心诉求、结论与涉及文件，杜绝全量 Token 爆炸；
- * 2. 按需深挖：提供 `readRecentTranscript` 供成员随身手机 `phone_read_dsh_session` 主动查阅更多细节；
- * 3. 反向（家庭成员 -> DSH 主会话）：分级沉淀工作区文件变更账本与协作结论，在主对话下一轮 `agent/pre-step` 中附带「脏文件强制重读守卫（Stale-Read Guard）」精准同步给主模型。
+ * 1. 正向（DSH -> 家庭成员）：按 `(sessionId, memberId)` 维护游标 `lastSyncedSeq`，仅注入增量核心脉络；
+ * 2. 按需深挖：提供 `readRecentTranscript` 供随身手机 `phone_read_dsh_session` 查阅；
+ * 3. 反向（家庭成员 -> DSH 主会话）：将完整对话记录与操作变更写入独立的 Markdown 纪要文件（`receipts/<sessionId>/家庭协作纪要-*.md`），
+ *    向主会话仅注入轻量文件索引与脏文件防覆盖重读守卫，彻底告别长段文本撑爆用户气泡。
  */
 export class DshSessionContextBridge {
   private readonly getSession: (sessionId: string) => BridgeableSessionLike | undefined;
+  private readonly receiptsBaseDir: string;
   private readonly onSyncSummaryChange?: (summary: PendingMainSyncSummary) => void;
   private readonly lastSyncedSeqByActor = new Map<string, number>();
   private readonly pendingLedgersBySession = new Map<string, PendingSessionLedger>();
+  private readonly latestSavedReceiptBySession = new Map<
+    string,
+    { readonly path: string; readonly title: string; readonly updatedAt: string }
+  >();
+  private batchCounter = 0;
 
   public constructor(
     getSession: (sessionId: string) => BridgeableSessionLike | undefined,
     options?: {
+      readonly storageDir?: string;
       readonly onSyncSummaryChange?: (summary: PendingMainSyncSummary) => void;
     }
   ) {
     this.getSession = getSession;
+    const base = options?.storageDir ?? join(tmpdir(), 'dsh-agent-family');
+    this.receiptsBaseDir = join(base, 'receipts');
     this.onSyncSummaryChange = options?.onSyncSummaryChange;
   }
 
@@ -151,6 +186,11 @@ export class DshSessionContextBridge {
       if (ev.seq > maxSeq) maxSeq = ev.seq;
 
       if (ev.type === 'user/message') {
+        const srcKind =
+          ev.data.source && typeof ev.data.source === 'object'
+            ? (ev.data.source as Record<string, unknown>).kind
+            : 'user';
+        if (srcKind && srcKind !== 'user') continue;
         const text = extractBlocksText(ev.data.message ?? ev.data, 360);
         if (text) {
           turnsSummary.push(`- [用户]: ${text}`);
@@ -223,6 +263,11 @@ export class DshSessionContextBridge {
 
     for (const ev of allEvents) {
       if (ev.type === 'user/message') {
+        const srcKind =
+          ev.data.source && typeof ev.data.source === 'object'
+            ? (ev.data.source as Record<string, unknown>).kind
+            : 'user';
+        if (srcKind && srcKind !== 'user') continue;
         const text = extractBlocksText(ev.data.message ?? ev.data, 700);
         if (text) lines.push(`[用户 #${ev.seq}]: ${text}`);
       } else if (ev.type === 'assistant/message') {
@@ -265,22 +310,94 @@ export class DshSessionContextBridge {
   private ensureLedger(sessionId: string): PendingSessionLedger {
     let ledger = this.pendingLedgersBySession.get(sessionId);
     if (!ledger) {
+      this.batchCounter += 1;
+      const now = new Date();
+      const stamp = formatTimeStampForFile(now);
+      const sessionDir = join(this.receiptsBaseDir, sanitizePathSegment(sessionId));
+      const fileName = `家庭协作纪要-${stamp}-${this.batchCounter}.md`;
       ledger = {
+        batchId: `${stamp}-${this.batchCounter}`,
         filesByPath: new Map(),
-        notes: [],
-        updatedAt: new Date().toISOString(),
+        records: [],
+        receiptFilePath: join(sessionDir, fileName),
+        receiptTitle: fileName,
+        updatedAt: now.toISOString(),
       };
       this.pendingLedgersBySession.set(sessionId, ledger);
     }
     return ledger;
   }
 
+  private writeLedgerMarkdownFile(sessionId: string, ledger: PendingSessionLedger): void {
+    try {
+      const session = this.getSession(sessionId);
+      const sessionDir = join(this.receiptsBaseDir, sanitizePathSegment(sessionId));
+      mkdirSync(sessionDir, { recursive: true });
+
+      const changedFiles = Array.from(ledger.filesByPath.values());
+      const mdLines: string[] = [
+        `# 🏠 智能体家庭协作纪要`,
+        ``,
+        `- **关联会话**：\`${sessionId}\`${session?.header.title ? `（${String(session.header.title)}）` : ''}`,
+        `- **工作目录**：\`${session?.header.cwd ?? '当前工作区'}\``,
+        `- **更新时间**：${ledger.updatedAt}`,
+        ``,
+      ];
+
+      if (changedFiles.length > 0) {
+        mdLines.push(`## 📄 工作区文件变更清单（共 ${changedFiles.length} 个文件）`, ``);
+        for (const f of changedFiles) {
+          const who = f.byMemberName ? ` — *${f.byMemberName}*` : '';
+          mdLines.push(
+            `- **[${formatChangeKindLabel(f.kind)}]** \`${f.path}\`${formatChangeStats(f)}${who}`
+          );
+        }
+        mdLines.push(``);
+      }
+
+      mdLines.push(`## 💬 对话与协作全记录（共 ${ledger.records.length} 条）`, ``);
+      for (const [idx, rec] of ledger.records.entries()) {
+        mdLines.push(`### ${idx + 1}. ${rec.actorLabel}（${rec.timeIso}）`, ``);
+        if (rec.userPrompt) {
+          mdLines.push(`> **诉求 / 议题**：${rec.userPrompt.replace(/\n+/gu, ' ')}`, ``);
+        }
+        if (rec.bodyText) {
+          mdLines.push(rec.bodyText, ``);
+        }
+        if (rec.changedFiles.length > 0) {
+          mdLines.push(
+            `**本轮变更文件**：${rec.changedFiles.map((c) => `\`${c.path}\` (${formatChangeKindLabel(c.kind)})`).join('、')}`,
+            ``
+          );
+        }
+      }
+
+      const tmpPath = `${ledger.receiptFilePath}.tmp-${process.pid}-${Date.now()}`;
+      writeFileSync(tmpPath, `${mdLines.join('\n')}\n`, 'utf8');
+      renameSync(tmpPath, ledger.receiptFilePath);
+
+      this.latestSavedReceiptBySession.set(sessionId, {
+        path: ledger.receiptFilePath,
+        title: ledger.receiptTitle,
+        updatedAt: ledger.updatedAt,
+      });
+    } catch {
+      // ignore disk failure in read-only sandbox
+    }
+  }
+
   private toSummary(sessionId: string, ledger?: PendingSessionLedger): PendingMainSyncSummary {
+    const latestSaved = this.latestSavedReceiptBySession.get(sessionId);
     return {
       scopeId: sessionId,
       changedFiles: ledger ? Array.from(ledger.filesByPath.values()) : [],
-      noteCount: ledger ? ledger.notes.length : 0,
-      updatedAt: ledger?.updatedAt ?? new Date().toISOString(),
+      noteCount: ledger ? ledger.records.length : 0,
+      ...(ledger?.receiptFilePath
+        ? { latestReceiptPath: ledger.receiptFilePath, latestReceiptTitle: ledger.receiptTitle }
+        : latestSaved
+          ? { latestReceiptPath: latestSaved.path, latestReceiptTitle: latestSaved.title }
+          : {}),
+      updatedAt: ledger?.updatedAt ?? latestSaved?.updatedAt ?? new Date().toISOString(),
     };
   }
 
@@ -289,20 +406,26 @@ export class DshSessionContextBridge {
   }
 
   public listAllPendingSyncSummaries(): PendingMainSyncSummary[] {
+    const seen = new Set<string>([
+      ...this.pendingLedgersBySession.keys(),
+      ...this.latestSavedReceiptBySession.keys(),
+    ]);
     const list: PendingMainSyncSummary[] = [];
-    for (const [sessionId, ledger] of this.pendingLedgersBySession) {
-      if (ledger.filesByPath.size > 0 || ledger.notes.length > 0) {
-        list.push(this.toSummary(sessionId, ledger));
+    for (const sessionId of seen) {
+      const summary = this.getPendingSyncSummary(sessionId);
+      if (
+        summary.changedFiles.length > 0 ||
+        summary.noteCount > 0 ||
+        Boolean(summary.latestReceiptPath)
+      ) {
+        list.push(summary);
       }
     }
     return list;
   }
 
   /**
-   * 分级记录家庭成员或群聊与用户的协作进展：
-   * - 若无文件改动且属于日常寒暄问候，静默跳过，绝不污染主会话；
-   * - 若有真实落盘文件改动，按文件路径合并更新账本（含临时文件新增后删除自动抵消）；
-   * - 实时触发 `onSyncSummaryChange` 以便前端更新左屏家庭胶囊微标。
+   * 分级记录家庭成员或群聊与用户的协作进展，并实时落盘为独立 Markdown 纪要文件。
    */
   public recordCollaborationActivity(
     input: RecordCollaborationActivityInput
@@ -320,7 +443,6 @@ export class DshSessionContextBridge {
     for (const change of changedFiles) {
       const existing = ledger.filesByPath.get(change.path);
       if (existing?.kind === 'added' && change.kind === 'deleted') {
-        // 本批次内临时创建又自行清理的脚本/中间文件，直接抵消不打扰主会话
         ledger.filesByPath.delete(change.path);
         continue;
       }
@@ -333,19 +455,21 @@ export class DshSessionContextBridge {
       });
     }
 
-    const cleanPrompt = userPrompt.replace(/\s+/gu, ' ').trim().slice(0, 90);
-    const cleanConclusion = conclusion.replace(/\s+/gu, ' ').trim().slice(0, 280);
-    if (cleanConclusion || changedFiles.length > 0) {
-      const noteLine = cleanConclusion
-        ? `${actorLabel} 处理了「${cleanPrompt}」：${cleanConclusion}`
-        : `${actorLabel} 处理了「${cleanPrompt}」并更新了 ${changedFiles.length} 个文件`;
-      ledger.notes.push(noteLine);
-      if (ledger.notes.length > 8) {
-        ledger.notes.shift();
-      }
+    const nowIso = new Date().toISOString();
+    ledger.records.push({
+      timeIso: nowIso,
+      actorLabel,
+      userPrompt: userPrompt.trim(),
+      bodyText: conclusion.trim(),
+      changedFiles,
+    });
+    if (ledger.records.length > 20) {
+      ledger.records.shift();
     }
 
-    ledger.updatedAt = new Date().toISOString();
+    ledger.updatedAt = nowIso;
+    this.writeLedgerMarkdownFile(sessionId, ledger);
+
     const summary = this.toSummary(sessionId, ledger);
     this.onSyncSummaryChange?.(summary);
     return summary;
@@ -377,53 +501,61 @@ export class DshSessionContextBridge {
         });
       }
     }
-    if (trimmed) {
-      ledger.notes.push(trimmed.length > 700 ? `${trimmed.slice(0, 700)}…` : trimmed);
-      if (ledger.notes.length > 10) {
-        ledger.notes.shift();
+    const nowIso = new Date().toISOString();
+    if (trimmed || (changedFiles && changedFiles.length > 0)) {
+      ledger.records.push({
+        timeIso: nowIso,
+        actorLabel: '智能体家庭协作',
+        bodyText: trimmed,
+        changedFiles: changedFiles ?? [],
+      });
+      if (ledger.records.length > 20) {
+        ledger.records.shift();
       }
     }
-    ledger.updatedAt = new Date().toISOString();
+    ledger.updatedAt = nowIso;
+    this.writeLedgerMarkdownFile(sessionId, ledger);
     this.onSyncSummaryChange?.(this.toSummary(sessionId, ledger));
   }
 
+  /**
+   * 消费当前待同步账本：不直接灌入长篇聊天记录，仅返回指向独立 `.md` 纪要文件的紧凑索引与脏文件重读守卫。
+   */
   public consumePendingReceipts(sessionId: string): string {
     const ledger = this.pendingLedgersBySession.get(sessionId);
-    if (!ledger || (ledger.filesByPath.size === 0 && ledger.notes.length === 0)) {
+    if (!ledger || (ledger.filesByPath.size === 0 && ledger.records.length === 0)) {
       return '';
     }
     const changedFiles = Array.from(ledger.filesByPath.values());
-    const notes = [...ledger.notes];
+    const actors = Array.from(new Set(ledger.records.map((r) => r.actorLabel)));
+    const receiptPath = ledger.receiptFilePath;
+    const recordCount = ledger.records.length;
+
     this.pendingLedgersBySession.delete(sessionId);
     this.onSyncSummaryChange?.(this.toSummary(sessionId, undefined));
 
     if (changedFiles.length > 0) {
-      const fileLines = changedFiles.map((f) => {
-        const who = f.byMemberName ? ` — 由 ${f.byMemberName} ${formatChangeKindLabel(f.kind)}` : '';
-        return `- [${formatChangeKindLabel(f.kind)}] \`${f.path}\`${formatChangeStats(f)}${who}`;
-      });
+      const fileItems = changedFiles.map(
+        (f) => `- [${formatChangeKindLabel(f.kind)}] \`${f.path}\`${formatChangeStats(f)}${f.byMemberName ? ` (${f.byMemberName})` : ''}`
+      );
       return [
-        '',
-        '',
         '<family_workspace_changes>',
-        '【智能体家庭工作区文件变更同步与防覆盖守卫】',
-        `自你上一轮执行以来，用户在当前会话通过「智能体家庭」完成了以下文件落盘修改（共 ${changedFiles.length} 个文件）：`,
-        ...fileLines,
-        ...(notes.length > 0 ? ['', '协作背景摘要：', ...notes.map((n) => `- ${n}`)] : []),
-        '',
-        '⚠️ 强制重读守卫（Stale-Read Guard）：',
-        '上述「新增 / 修改」的文件已在磁盘更新，你此前上下文历史中读取过的旧文件内容已失效（Stale）。若本轮需要引用、审查或继续编辑这些文件，你【必须】先重新调用读取文件工具获取最新内容，严禁凭历史缓存覆盖修改；标记为「删除」的文件请勿按旧印象写回。',
+        '【智能体家庭协作纪要索引与文件防覆盖守卫】',
+        `- 参与协作：${actors.join('、')}（共 ${recordCount} 条记录）`,
+        `- 完整对话与修改详情已归档至 Markdown 文件：\`${receiptPath}\`（若用户询问家庭成员刚才说了什么或需了解讨论细节，请直接读取该文件，切勿凭空猜测）。`,
+        `- 已落盘工作区变更文件（共 ${changedFiles.length} 个）：`,
+        ...fileItems,
+        '⚠️ 强制重读守卫（Stale-Read Guard）：上述「新增 / 修改」的文件已在磁盘更新，你此前历史上下文中缓存的旧内容已失效；若需引用或继续编辑这些文件，你【必须】先重新调用读取文件工具获取最新内容，严禁凭旧记忆覆盖。',
         '</family_workspace_changes>',
       ].join('\n');
     }
 
     return [
-      '',
-      '',
-      '<family_collaboration_receipt>',
-      '以下是用户在当前会话通过「智能体家庭」刚刚完成的讨论进展回执（未修改工作区文件，供保持上下文衔接）：',
-      ...notes.map((item) => `- ${item}`),
-      '</family_collaboration_receipt>',
+      '<family_collaboration_index>',
+      '【智能体家庭最新讨论纪要索引】',
+      `- 参与讨论：${actors.join('、')}（共 ${recordCount} 条互动，未修改工作区文件）`,
+      `- 完整讨论内容已归档至 Markdown 文件：\`${receiptPath}\`（当用户问及家庭成员的观点、结论或刚才聊了什么时，请调用读取文件工具阅读该纪要文件获取完整原话）。`,
+      '</family_collaboration_index>',
     ].join('\n');
   }
 }

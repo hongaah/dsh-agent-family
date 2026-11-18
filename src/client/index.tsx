@@ -15,6 +15,10 @@ import {
   FamilyWorkbench,
   type SessionSummaryOption,
 } from './FamilyWorkbench.tsx';
+import {
+  FileReferenceHighlightChip,
+  MemberMentionPill,
+} from './MemberHoverChip.tsx';
 import { ensureFamilyStyles } from './styles.ts';
 
 export const name = 'dsh-agent-family';
@@ -86,6 +90,74 @@ interface SidebarRightTabsRegistry {
   }): () => void;
 }
 
+interface DshInputTriggersService {
+  registerSource(source: {
+    readonly trigger: string;
+    readonly name: string;
+    readonly showGroupTitle?: boolean;
+    candidates(
+      session: { readonly sessionId: string },
+      req: {
+        readonly query: string;
+        readonly quoted?: boolean;
+        readonly drilled?: boolean;
+        readonly signal: AbortSignal;
+      }
+    ): Promise<
+      ReadonlyArray<{
+        readonly name: string;
+        readonly label?: string;
+        readonly description?: string;
+        readonly icon?: string;
+        readonly section?: string;
+        readonly value: string;
+      }>
+    >;
+    onPick(event: {
+      readonly candidate: { readonly value?: string };
+      readonly action: string;
+    }):
+      | {
+          readonly insert: {
+            readonly source: string;
+            readonly ref: string;
+            readonly label: string;
+            readonly appearance: 'session' | 'file' | 'folder';
+            readonly clipboardText: string;
+          };
+        }
+      | undefined;
+    openReference?(
+      session: { readonly sessionId: string },
+      ref: { readonly ref: string; readonly appearance?: string }
+    ): boolean;
+    readonly codec: {
+      clipboardText(ref: string): string;
+      serialize(ref: string): Promise<string>;
+    };
+  }): () => void;
+}
+
+interface DshUiConversationService {
+  readonly userText?: {
+    register(rule: {
+      readonly id: string;
+      readonly order: number;
+      match(
+        text: string,
+        from: number
+      ):
+        | {
+            readonly id: string;
+            readonly start: number;
+            readonly end: number;
+            readonly data: Record<string, unknown>;
+          }
+        | undefined;
+    }): () => void;
+  };
+}
+
 interface ClientRuntimeContext {
   readonly locale: {
     register(ns: string, dicts: Record<string, Record<string, string>>): () => void;
@@ -117,6 +189,8 @@ interface ClientRuntimeContext {
   };
   readonly sidebarRight?: SidebarRightService;
   readonly sidebarRightTabs?: SidebarRightTabsRegistry;
+  readonly inputTriggers?: DshInputTriggersService;
+  readonly uiConversation?: DshUiConversationService;
   get?(serviceName: string): unknown;
   inject(deps: readonly string[], callback: (scoped: ClientRuntimeContext) => void | (() => void)): () => void;
   effect(fn: () => (() => void) | Generator<() => void, void, unknown>, label?: string): () => void;
@@ -340,10 +414,12 @@ function ComposerFamilyQuickBar({
   sessionId,
   inputActions,
   onOpenForSession,
+  onOpenReceiptFile,
 }: {
   readonly sessionId: string;
   readonly inputActions?: DshConversationInputActions;
   readonly onOpenForSession: (sessionId: string, target: FamilyFocusTarget) => void;
+  readonly onOpenReceiptFile: (sessionId: string, receiptPath: string) => void;
 }): React.ReactElement {
   const { state } = useFamilyLiveState(sessionId);
 
@@ -370,62 +446,66 @@ function ComposerFamilyQuickBar({
     [state, sessionId]
   );
   const pendingFileCount = pendingSync?.changedFiles.length ?? 0;
+  const pendingNoteCount = pendingSync?.noteCount ?? 0;
+  const latestReceiptPath = pendingSync?.latestReceiptPath;
   const isSessionActive = activity.kind === 'active' || activity.kind === 'approval';
 
   const chipTitle =
     pendingFileCount > 0
-      ? `家庭成员已修改 ${pendingFileCount} 个文件（${pendingSync!.changedFiles
-          .slice(0, 5)
-          .map((f) => f.path)
-          .join('、')}）— 下次在此对话发消息将自动同步变更账本并启动防覆盖重读守卫`
-      : '在当前会话旁打开智能体家庭群聊（也可在输入框敲 /family 或 /成员ID 直接指派）';
+      ? `家庭成员已修改 ${pendingFileCount} 个文件 — 下次发消息将静默同步纪要文件索引并开启防覆盖重读守卫（不污染提问气泡）`
+      : '在当前会话旁打开智能体家庭群聊（也可在输入框敲 @成员名称 或 /family 直接指派）';
+
+  const receiptChipLabel =
+    pendingFileCount > 0
+      ? `协作纪要 · 改${pendingFileCount}文件`
+      : pendingNoteCount > 0
+        ? `协作纪要 · ${pendingNoteCount}条`
+        : '最新协作纪要.md';
 
   return (
     <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 4 }}>
       {scopedApprovals.length > 0 && <ApprovalBanner approvals={scopedApprovals} compact />}
-      <button
-        type="button"
-        onClick={() => onOpenForSession(sessionId, { kind: 'group', groupId: 'family-main' })}
-        className="dshfam-chip"
-        title={chipTitle}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '3px 10px',
-          fontSize: 12,
-          ...(scopedApprovals.length > 0
-            ? { borderColor: '#d97706', color: '#d97706', fontWeight: 600 }
-            : isSessionActive
-              ? { borderColor: 'rgba(16, 185, 129, 0.5)', fontWeight: 600 }
-              : pendingFileCount > 0
-                ? { borderColor: 'rgba(59, 130, 246, 0.45)' }
-                : {}),
-        }}
-      >
-        {activity.kind === 'active' ? <span className="dshfam-live-green-dot" /> : <span>🏠</span>}
-        <span>
-          {activity.kind === 'active' && activity.shortLabel
-            ? `家庭 · ${activity.shortLabel}`
-            : `家庭 (${enabledCount})`}
-        </span>
-        {pendingFileCount > 0 && (
-          <span
-            style={{
-              fontSize: 11,
-              color: '#3b82f6',
-              fontWeight: 600,
-              whiteSpace: 'nowrap',
-            }}
-          >
-            · 📄 已改 {pendingFileCount} 文件
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          onClick={() => onOpenForSession(sessionId, { kind: 'group', groupId: 'family-main' })}
+          className="dshfam-chip"
+          title={chipTitle}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '3px 10px',
+            fontSize: 12,
+            ...(scopedApprovals.length > 0
+              ? { borderColor: '#d97706', color: '#d97706', fontWeight: 600 }
+              : isSessionActive
+                ? { borderColor: 'rgba(16, 185, 129, 0.5)', fontWeight: 600 }
+                : pendingFileCount > 0
+                  ? { borderColor: 'rgba(59, 130, 246, 0.45)' }
+                  : {}),
+          }}
+        >
+          {activity.kind === 'active' ? <span className="dshfam-live-green-dot" /> : <span>🏠</span>}
+          <span>
+            {activity.kind === 'active' && activity.shortLabel
+              ? `家庭 · ${activity.shortLabel}`
+              : `家庭 (${enabledCount})`}
           </span>
+          {activity.totalUnread > 0 && (
+            <span className="sh-unread-badge">{activity.totalUnread}</span>
+          )}
+          {scopedApprovals.length > 0 && <span>· 🙋 {scopedApprovals.length} 待批示</span>}
+        </button>
+
+        {latestReceiptPath && (
+          <FileReferenceHighlightChip
+            label={receiptChipLabel}
+            fullPath={`点击在 DSH 右侧栏预览家庭协作纪要：${latestReceiptPath}`}
+            onOpen={() => onOpenReceiptFile(sessionId, latestReceiptPath)}
+          />
         )}
-        {activity.totalUnread > 0 && (
-          <span className="sh-unread-badge">{activity.totalUnread}</span>
-        )}
-        {scopedApprovals.length > 0 && <span>· 🙋 {scopedApprovals.length} 待批示</span>}
-      </button>
+      </div>
     </div>
   );
 }
@@ -668,11 +748,23 @@ export function apply(ctx: ClientRuntimeContext): void {
     filePath: string,
     line?: number
   ) => {
+    const effectiveScopeId =
+      scopeId !== 'default'
+        ? scopeId
+        : (navBridge.getExternalSession() ?? readSessionsList(ctx)[0]?.id ?? 'default');
     const sessionCwd =
-      cwd ?? ctx.sessions?.list?.getSnapshot()?.byId?.[scopeId]?.cwd;
+      cwd ?? ctx.sessions?.list?.getSnapshot()?.byId?.[effectiveScopeId]?.cwd;
     const absPath = resolveWorkspaceAbsolutePath(sessionCwd, filePath);
 
-    // 若携带具体行号且安装了 betterSidebar 编辑器，优先使用行号定位打开
+    // 若当前处于全屏家庭面板，先切回对话视图以便右侧原生文件预览栏立即可见
+    if (
+      effectiveScopeId !== 'default' &&
+      layoutRef?.panelInfo?.getSnapshot().activePanelId === PANEL_ID
+    ) {
+      layoutRef.selectPanel(null);
+    }
+
+    // 1. 仅当明确指定行号且安装了 betterSidebar 源码编辑器时，支持精准跳到指定行
     if (line !== undefined && typeof ctx.get === 'function') {
       try {
         const bs = ctx.get('betterSidebar') as BetterSidebarOptionalService | undefined;
@@ -689,13 +781,19 @@ export function apply(ctx: ClientRuntimeContext): void {
           return;
         }
       } catch {
-        // fallback to openResource
+        // fallback to native openResource
       }
     }
 
-    if (sidebarRightRef && typeof sidebarRightRef.openResource === 'function' && scopeId !== 'default') {
+    // 2. 统一优先复用 DSH 宿主原生的文件预览机制 (`ctx.sidebarRight.openResource`)：
+    // 原生支持 Markdown、代码、PNG/JPG/WebP/GIF 图片、PDF、HTML、Excel/Word/PPT 预览，无需重复造轮子
+    if (
+      sidebarRightRef &&
+      typeof sidebarRightRef.openResource === 'function' &&
+      effectiveScopeId !== 'default'
+    ) {
       try {
-        const uri = buildDshSessionFileAddress(scopeId, sessionCwd, filePath);
+        const uri = buildDshSessionFileAddress(effectiveScopeId, sessionCwd, filePath);
         sidebarRightRef.openResource(uri);
         return;
       } catch {
@@ -991,11 +1089,181 @@ export function apply(ctx: ClientRuntimeContext): void {
             sessionId={props.sessionId}
             inputActions={props.inputActions}
             onOpenForSession={openFamilyForConversation}
+            onOpenReceiptFile={(sid, receiptPath) =>
+              openWorkspaceFileInHost(sid, undefined, receiptPath)
+            }
           />
         );
       }
     )
   );
+
+  // 2.5 注册外部 DSH 主对话输入框 `@` 家庭成员补全与已发送消息 `@名称` 高亮悬浮名片
+  ctx.inject(['inputTriggers', 'uiConversation'], (scoped) => {
+    const triggers = scoped.inputTriggers;
+    const uiConv = scoped.uiConversation;
+
+    function DshSentMemberMentionNode(props: {
+      readonly sessionId?: string;
+      readonly node: { readonly data?: Record<string, unknown> };
+    }): React.ReactElement {
+      const globalState = useFamilyGlobalState();
+      const memberId = String(props.node.data?.memberId ?? '');
+      const found = globalState.members.find((m) => m.id === memberId);
+      return (
+        <MemberMentionPill
+          member={found}
+          fallbackId={memberId}
+          onClick={() => {
+            if (props.sessionId && memberId) {
+              openFamilyForConversation(props.sessionId, {
+                kind: 'member',
+                memberId,
+              });
+            }
+          }}
+        />
+      );
+    }
+
+    if (uiConv?.userText) {
+      scoped.effect(
+        () =>
+          uiConv.userText!.register({
+            id: 'dsh-family-member',
+            order: 15,
+            match(text: string, from: number) {
+              const members = familyLiveStore.getState().members;
+              if (members.length === 0) return undefined;
+              let best:
+                | {
+                    readonly id: string;
+                    readonly start: number;
+                    readonly end: number;
+                    readonly data: Record<string, unknown>;
+                  }
+                | undefined;
+
+              for (const m of members) {
+                for (const token of [`@${m.id}`, `@${m.name}`]) {
+                  let searchPos = from;
+                  while (searchPos < text.length) {
+                    const idx = text.indexOf(token, searchPos);
+                    if (idx === -1) break;
+                    const beforeChar = idx > 0 ? text[idx - 1] ?? '' : '';
+                    const afterChar = text[idx + token.length] ?? '';
+                    const validBefore = idx === 0 || /[\s,;:!?，。；：！？(（]/u.test(beforeChar);
+                    const validAfter =
+                      token === `@${m.name}` ||
+                      !afterChar ||
+                      !/[a-z0-9-]/iu.test(afterChar);
+                    if (validBefore && validAfter) {
+                      if (
+                        !best ||
+                        idx < best.start ||
+                        (idx === best.start && token.length > best.end - best.start)
+                      ) {
+                        best = {
+                          id: 'dsh-family-member',
+                          start: idx,
+                          end: idx + token.length,
+                          data: { memberId: m.id, memberName: m.name },
+                        };
+                      }
+                      break;
+                    }
+                    searchPos = idx + 1;
+                  }
+                }
+              }
+              return best;
+            },
+          }),
+        'dsh-agent-family: usertext-member-rule'
+      );
+
+      scoped.effect(
+        () =>
+          scoped.slots.inject('conversation.user.text.node', () =>
+            scoped.slots.register(
+              {
+                name: 'conversation.user.text.node',
+                key: 'dsh-family-member',
+                priority: 100,
+                locale: LOCALE_NS,
+              },
+              DshSentMemberMentionNode
+            )
+          ),
+        'dsh-agent-family: usertext-member-node'
+      );
+    }
+
+    if (triggers) {
+      scoped.effect(
+        () =>
+          triggers.registerSource({
+            trigger: '@',
+            name: 'dsh-agent-family',
+            showGroupTitle: false,
+            async candidates(_session, { query, quoted }) {
+              if (quoted) return [];
+              await familyLiveStore.ensureBootstrapped();
+              const enabled = familyLiveStore.getState().members.filter((m) => m.enabled);
+              const q = query.trim().toLowerCase();
+              return enabled
+                .filter(
+                  (m) =>
+                    !q ||
+                    m.name.toLowerCase().includes(q) ||
+                    m.id.toLowerCase().includes(q) ||
+                    m.specialty.toLowerCase().includes(q)
+                )
+                .map((m) => ({
+                  name: m.name,
+                  label: m.name,
+                  description: `@${m.id} · ${m.body.kind} · ${m.specialty.slice(0, 26)}`,
+                  icon: 'session',
+                  section: '智能体家庭成员',
+                  value: JSON.stringify({ id: m.id, name: m.name }),
+                }));
+            },
+            onPick({ candidate }) {
+              if (!candidate.value) return undefined;
+              try {
+                const parsed = JSON.parse(candidate.value) as { id?: string; name?: string };
+                if (!parsed.id || !parsed.name) return undefined;
+                return {
+                  insert: {
+                    source: 'dsh-agent-family',
+                    ref: `@${parsed.id}`,
+                    label: parsed.name,
+                    appearance: 'session',
+                    clipboardText: `@${parsed.id}`,
+                  },
+                };
+              } catch {
+                return undefined;
+              }
+            },
+            openReference(session, { ref }) {
+              const memberId = ref.replace(/^@/u, '').trim();
+              if (!memberId) return false;
+              openFamilyForConversation(session.sessionId, {
+                kind: 'member',
+                memberId,
+              });
+              return true;
+            },
+            codec: {
+              clipboardText: (ref) => ref,
+              serialize: (ref) => Promise.resolve(ref),
+            },
+          }),
+        'dsh-agent-family: main-composer-at-trigger'
+      );
+    }
+  });
 
   // 3. 对话流内嵌家庭任务与群聊结果卡片
   const familyToolNames = ['family_assign', 'family_group_discuss'] as const;

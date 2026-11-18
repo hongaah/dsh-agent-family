@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
+import { existsSync, statSync } from 'node:fs';
+import { basename, extname, resolve } from 'node:path';
 
+import {
+  FamilyAttachmentStore,
+  searchWorkspaceFiles,
+} from '../core/attachment-store.ts';
 import { AvatarStore, formatAvatarPrefixForPrompt } from '../core/avatar-utils.ts';
 import { probeAllBodies } from '../core/cli-locator.ts';
 import { DshSessionContextBridge } from '../core/dsh-context-bridge.ts';
@@ -22,6 +27,7 @@ import type {
   BodySpec,
   CreateMemberInput,
   FamilyMember,
+  FamilyMessageAttachment,
   FamilyRealtimeEvent,
   PhoneCallIntent,
   UpdateMemberInput,
@@ -152,31 +158,44 @@ function writeJson(res: DshHttpResponse, status: number, body: unknown): void {
   res.end(text);
 }
 
-function appendHintToLastUserMessage(
-  messages: readonly DshPreStepMessage[],
-  note: string
-): DshPreStepMessage[] {
-  const copy = messages.map((m) => ({
-    ...m,
-    content: m.content.map((c) => ({ ...c })),
-  }));
-  for (let i = copy.length - 1; i >= 0; i -= 1) {
-    const msg = copy[i]!;
-    if (!msg.role || msg.role === 'user') {
-      const textIdx = msg.content.findLastIndex((part) => part.type === 'text');
-      if (textIdx >= 0) {
-        const prev = msg.content[textIdx]!;
-        msg.content[textIdx] = {
-          ...prev,
-          text: `${prev.text ?? ''}${note}`,
-        };
-      } else {
-        msg.content.push({ type: 'text', text: note });
-      }
-      break;
+function buildHiddenFamilyContextMessage(note: string): DshPreStepMessage {
+  return deepFreezeJson({
+    id: randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text: note.trim() }],
+    source: { kind: 'dsh-agent-family' },
+  });
+}
+
+function resolveLocalPathsToAttachments(
+  rawPaths: readonly unknown[],
+  baseCwd: string
+): FamilyMessageAttachment[] {
+  const imageExts = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg']);
+  const result: FamilyMessageAttachment[] = [];
+  for (const raw of rawPaths) {
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    const abs = resolve(baseCwd, raw.trim().replace(/^@"?|"?$/gu, ''));
+    if (!existsSync(abs)) continue;
+    try {
+      const st = statSync(abs);
+      if (!st.isFile()) continue;
+      const ext = extname(abs).toLowerCase();
+      const isImg = imageExts.has(ext);
+      result.push({
+        id: `ext-${randomUUID().slice(0, 8)}`,
+        kind: isImg ? 'image' : 'file',
+        name: basename(abs),
+        mimeType: isImg ? `image/${ext === '.jpg' ? 'jpeg' : ext.slice(1)}` : 'application/octet-stream',
+        sizeBytes: st.size,
+        filePath: abs,
+        previewUrl: '',
+      });
+    } catch {
+      // ignore unreadable path
     }
   }
-  return copy;
+  return result;
 }
 
 function parseBodySpecFromPayload(raw: unknown): BodySpec | undefined {
@@ -285,6 +304,7 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
       const storageDir = options.storageDir ?? defaultFamilyStorageDir();
       const registry = new MemberRegistry(storageDir);
       const avatarStore = new AvatarStore(storageDir);
+      const attachmentStore = new FamilyAttachmentStore(storageDir, API_PREFIX);
       const observedAgents = new Map<string, DshAgentLike>();
       const managedDshHandles = new Map<string, DshOwnedAgentHandle>();
 
@@ -664,6 +684,7 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
       const contextBridge = new DshSessionContextBridge(
         (sessionId) => ctx.sessions.get(sessionId),
         {
+          storageDir,
           onSyncSummaryChange: (summary) => {
             hub.emit({ type: 'main_sync_updated', summary });
           },
@@ -785,14 +806,22 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
                 ? contextBridge.consumePendingReceipts(sessId)
                 : '';
 
-              const enabledIds = new Set(registry.listEnabled().map((m) => m.id));
+              const enabledMembers = registry.listEnabled();
+              const enabledIds = new Set(enabledMembers.map((m) => m.id));
               const mentioned: string[] = [];
               if (enabledIds.size > 0) {
                 for (const msg of decision.messages) {
                   if (msg.role && msg.role !== 'user') continue;
+                  const srcKind =
+                    msg.source && typeof msg.source === 'object' ? msg.source.kind : 'user';
+                  if (srcKind && srcKind !== 'user') continue;
                   for (const block of msg.content) {
                     if (block.type === 'text' && typeof block.text === 'string') {
-                      for (const id of extractMemberMentions(block.text, enabledIds)) {
+                      for (const id of extractMemberMentions(
+                        block.text,
+                        enabledIds,
+                        enabledMembers
+                      )) {
                         if (!mentioned.includes(id)) mentioned.push(id);
                       }
                     }
@@ -811,18 +840,24 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
 
                 routingHint =
                   mentioned.length === 1
-                    ? `\n\n<family_direct_mention>\n用户明确点名了家庭成员 ${memberDescriptions}。请立即调用 \`family_assign\` 将用户的完整诉求交由 \`${mentioned[0]}\` 处理，不要越俎代庖替其回答。\n</family_direct_mention>`
-                    : `\n\n<family_direct_mention>\n用户同时点名了多位家庭成员：${memberDescriptions}。如属并行独立任务请调用 \`family_assign\` 并发指派；如属方案会商请调用 \`family_group_discuss\` 拉起群聊讨论。\n</family_direct_mention>`;
+                    ? `<family_direct_mention>\n用户明确点名了家庭成员 ${memberDescriptions}。请立即调用 \`family_assign\` 将用户的完整诉求（若用户消息中带有图片/文件附件路径或 @文件 引用，请一并填入 \`attachmentPaths\`）交由 \`${mentioned[0]}\` 处理，不要越俎代庖替其回答。\n</family_direct_mention>`
+                    : `<family_direct_mention>\n用户同时点名了多位家庭成员：${memberDescriptions}。如属并行独立任务请调用 \`family_assign\`（附带相关 \`attachmentPaths\`）并发指派；如属方案会商请调用 \`family_group_discuss\` 拉起群聊讨论。\n</family_direct_mention>`;
               }
 
-              const combinedNote = `${pendingReceiptBlock}${routingHint}`;
+              const combinedNote = [pendingReceiptBlock, routingHint]
+                .map((s) => s.trim())
+                .filter(Boolean)
+                .join('\n\n');
               if (!combinedNote) {
                 return decision;
               }
 
               return {
                 ...decision,
-                messages: appendHintToLastUserMessage(decision.messages, combinedNote),
+                messages: [
+                  ...decision.messages,
+                  buildHiddenFamilyContextMessage(combinedNote),
+                ],
               };
             }
           ),
@@ -867,6 +902,7 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
                   registry,
                   profileStore,
                   avatarStore,
+                  attachmentStore,
                   modelCatalog,
                   contextBridge,
                   hub,
@@ -1195,6 +1231,11 @@ function registerFamilyTools(
                     type: 'boolean',
                     description: '可选：是否重置该成员唤醒全新身体上下文（默认 false，延续该成员当前记忆）',
                   },
+                  attachmentPaths: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: '可选：随任务透传给该家庭成员的本地图片或文件附件路径数组',
+                  },
                 },
                 required: ['memberId', 'goal'],
                 additionalProperties: false,
@@ -1268,6 +1309,9 @@ function registerFamilyTools(
                   ? resolve(defaultCwd, item.cwd.trim())
                   : defaultCwd;
               const fresh = item.fresh === true;
+              const taskAttachments = Array.isArray(item.attachmentPaths)
+                ? resolveLocalPathsToAttachments(item.attachmentPaths, taskCwd)
+                : [];
               const memberMeta = registry.get(memberId);
 
               try {
@@ -1277,6 +1321,7 @@ function registerFamilyTools(
                   senderRole: 'lead',
                   senderName: '主对话统筹',
                   message: goal,
+                  ...(taskAttachments.length > 0 ? { attachments: taskAttachments } : {}),
                   cwd: taskCwd,
                   fresh,
                   signal: exec.signal,
@@ -1496,6 +1541,7 @@ async function handleWebApiRequest(params: {
   readonly registry: MemberRegistry;
   readonly profileStore: FamilyProfileStore;
   readonly avatarStore: AvatarStore;
+  readonly attachmentStore: FamilyAttachmentStore;
   readonly modelCatalog: ModelCatalogService;
   readonly contextBridge: DshSessionContextBridge;
   readonly hub: FamilyHub;
@@ -1511,6 +1557,7 @@ async function handleWebApiRequest(params: {
     registry,
     profileStore,
     avatarStore,
+    attachmentStore,
     modelCatalog,
     contextBridge,
     hub,
@@ -1524,6 +1571,50 @@ async function handleWebApiRequest(params: {
   const method = (req.method ?? 'GET').toUpperCase();
 
   try {
+    if (method === 'POST' && subPath === '/attachments') {
+      const body = await readRequestJson(req);
+      const fileName = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : 'attachment';
+      const mimeType = typeof body.mimeType === 'string' ? body.mimeType : undefined;
+      const dataBase64 = typeof body.dataBase64 === 'string' ? body.dataBase64 : '';
+      if (!dataBase64) {
+        writeJson(res, 400, { error: '请提供附件的 dataBase64 内容。' });
+        return;
+      }
+      const attachment = attachmentStore.saveUploadedFile({
+        name: fileName,
+        mimeType,
+        dataBase64,
+      });
+      writeJson(res, 200, { attachment });
+      return;
+    }
+
+    if (method === 'GET' && subPath.startsWith('/attachments/')) {
+      const id = decodeURIComponent(subPath.slice('/attachments/'.length));
+      const item = attachmentStore.readAttachmentBytes(id);
+      if (!item) {
+        writeJson(res, 404, { error: '附件不存在或已被清理' });
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': item.meta.mimeType,
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      res.end(item.buffer);
+      return;
+    }
+
+    if (method === 'GET' && subPath === '/workspace-files') {
+      const scopeId = url.searchParams.get('scopeId') || 'default';
+      const query = url.searchParams.get('query') ?? '';
+      const explicitCwd = url.searchParams.get('cwd') || undefined;
+      const cwd = await resolveSessionCwd(ctx, scopeId, explicitCwd);
+      const files = await searchWorkspaceFiles(cwd, query, 25);
+      writeJson(res, 200, { files, cwd });
+      return;
+    }
+
     if (method === 'POST' && subPath === '/avatars') {
       const body = await readRequestJson(req);
       const dataUrl = typeof body.dataUrl === 'string' ? body.dataUrl : '';
@@ -1683,9 +1774,17 @@ async function handleWebApiRequest(params: {
       const body = await readRequestJson(req);
       const scopeId = typeof body.scopeId === 'string' && body.scopeId.trim() ? body.scopeId : 'default';
       const memberId = String(body.memberId ?? '').trim();
-      const message = String(body.message ?? '').trim();
+      const rawMessage = String(body.message ?? '').trim();
+      const attachmentIds = Array.isArray(body.attachmentIds)
+        ? body.attachmentIds.filter((x): x is string => typeof x === 'string')
+        : [];
+      const resolvedAttachments = attachmentIds
+        .map((id) => attachmentStore.getAttachmentMeta(id))
+        .filter((item): item is FamilyMessageAttachment => item !== null);
+      const message = rawMessage || (resolvedAttachments.length > 0 ? '请查看随附的附件。' : '');
+
       if (!memberId || !message) {
-        writeJson(res, 400, { error: 'memberId 与 message 不能为空。' });
+        writeJson(res, 400, { error: 'memberId 与消息/附件内容不能为空。' });
         return;
       }
       const foundMember = registry.get(memberId);
@@ -1712,6 +1811,7 @@ async function handleWebApiRequest(params: {
           senderRole: 'human',
           senderName: humanDisplayName,
           message,
+          ...(resolvedAttachments.length > 0 ? { attachments: resolvedAttachments } : {}),
           cwd,
           fresh: body.fresh === true,
         });
@@ -1831,9 +1931,17 @@ async function handleWebApiRequest(params: {
       const scopeId = typeof body.scopeId === 'string' && body.scopeId.trim() ? body.scopeId : 'default';
       const groupId =
         typeof body.groupId === 'string' && body.groupId.trim() ? body.groupId.trim() : MAIN_GROUP_ID;
-      const content = String(body.content ?? '').trim();
+      const rawContent = String(body.content ?? '').trim();
+      const attachmentIds = Array.isArray(body.attachmentIds)
+        ? body.attachmentIds.filter((x): x is string => typeof x === 'string')
+        : [];
+      const resolvedAttachments = attachmentIds
+        .map((id) => attachmentStore.getAttachmentMeta(id))
+        .filter((item): item is FamilyMessageAttachment => item !== null);
+      const content = rawContent || (resolvedAttachments.length > 0 ? '请大家看看随附的附件。' : '');
+
       if (!content) {
-        writeJson(res, 400, { error: '群聊发言内容不能为空。' });
+        writeJson(res, 400, { error: '群聊发言或附件内容不能为空。' });
         return;
       }
       if (!claimClientRequestId(body.clientRequestId)) {
@@ -1857,6 +1965,7 @@ async function handleWebApiRequest(params: {
           senderName: humanDisplayName,
           senderAvatar: '🧑‍💻',
           content,
+          ...(resolvedAttachments.length > 0 ? { attachments: resolvedAttachments } : {}),
           cwd,
         });
         if (scopeId !== 'default') {

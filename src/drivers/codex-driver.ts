@@ -1,9 +1,16 @@
+import { existsSync } from 'node:fs';
+
 import { resolveBodyExecutable } from '../core/cli-locator.ts';
 import {
   decidePermissionAction,
   extractAskUserPrompt,
 } from '../core/permission-policy.ts';
-import type { ApprovalOption, MemberStreamEvent, PermissionMode } from '../core/types.ts';
+import type {
+  ApprovalOption,
+  FamilyMessageAttachment,
+  MemberStreamEvent,
+  PermissionMode,
+} from '../core/types.ts';
 import {
   AsyncEventQueue,
   type AwakenMemberContext,
@@ -356,7 +363,11 @@ export class CodexDriver implements BodyDriver {
           currentEffort = nextEffort;
           return true;
         },
-        sendTurn: (prompt: string, signal: AbortSignal): AsyncIterable<MemberStreamEvent> => {
+        sendTurn: (
+          prompt: string,
+          signal: AbortSignal,
+          attachments?: readonly FamilyMessageAttachment[]
+        ): AsyncIterable<MemberStreamEvent> => {
           if (!peer.isAlive()) {
             throw new Error('Codex 身体进程已离线。');
           }
@@ -378,6 +389,24 @@ export class CodexDriver implements BodyDriver {
             hadExplicitPermissionOverride
           );
 
+          const codexInputs: Array<Record<string, unknown>> = [
+            {
+              type: 'text',
+              text: prompt,
+              text_elements: [],
+            },
+          ];
+          if (attachments && attachments.length > 0) {
+            for (const att of attachments) {
+              if (att.kind === 'image' && att.filePath && existsSync(att.filePath)) {
+                codexInputs.push({
+                  type: 'localImage',
+                  path: att.filePath,
+                });
+              }
+            }
+          }
+
           void peer
             .request(
               'turn/start',
@@ -386,13 +415,7 @@ export class CodexDriver implements BodyDriver {
                 ...(currentModel ? { model: currentModel } : {}),
                 ...(currentEffort ? { effort: currentEffort } : {}),
                 ...turnPermOverrides,
-                input: [
-                  {
-                    type: 'text',
-                    text: prompt,
-                    text_elements: [],
-                  },
-                ],
+                input: codexInputs,
               },
               signal
             )

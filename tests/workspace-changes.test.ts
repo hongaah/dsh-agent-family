@@ -1,11 +1,15 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildMainSessionHandoffDraft } from '../src/client/ChangedFilesDeliverableCard.tsx';
 import { rewriteMemberMentionsForHostMarkdown } from '../src/client/RichMessageContent.tsx';
+import {
+  FamilyAttachmentStore,
+  searchWorkspaceFiles,
+} from '../src/core/attachment-store.ts';
 import { DshSessionContextBridge } from '../src/core/dsh-context-bridge.ts';
 import { FamilyHub } from '../src/core/family-hub.ts';
 import {
@@ -212,11 +216,18 @@ describe('WorkspaceChangeTracker & DshSessionContextBridge', () => {
     expect(receipt).toContain('<family_workspace_changes>');
     expect(receipt).toContain('[新增] `references/zh.md` (+65)');
     expect(receipt).toContain('[修改] `SKILL.md` (+40 / -35)');
+    expect(receipt).toContain('家庭协作纪要-');
     expect(receipt).not.toContain('_tmp_translate.py');
     expect(receipt).toContain('强制重读守卫（Stale-Read Guard）');
 
-    // 消费后账本自动归零
-    expect(bridge.getPendingSyncSummary('sess-1').changedFiles).toHaveLength(0);
+    // 验证完整详情已独立落盘为可读的 .md 文件，且消费后 latestReceiptPath 仍可供左屏胶囊一键预览
+    const afterSummary = bridge.getPendingSyncSummary('sess-1');
+    expect(afterSummary.changedFiles).toHaveLength(0);
+    expect(afterSummary.latestReceiptPath).toBeTruthy();
+    expect(existsSync(afterSummary.latestReceiptPath!)).toBe(true);
+    const mdBody = readFileSync(afterSummary.latestReceiptPath!, 'utf8');
+    expect(mdBody).toContain('已完成 SKILL.md 翻译');
+    expect(mdBody).toContain('已润色并移除临时文件');
     expect(syncEvents.at(-1)).toBe(0);
   });
 
@@ -360,22 +371,74 @@ describe('WorkspaceChangeTracker & DshSessionContextBridge', () => {
     await hub.dispose();
   });
 
-  it('rewrites @member mentions safely outside code blocks and builds main session handoff draft', () => {
+  it('rewrites @member IDs & names to highlighted display names outside code blocks, and stores attachments + searches workspace files', async () => {
     const valid = new Set(['fe-claude', 'fe-codex']);
+    const membersMap = new Map([
+      [
+        'fe-claude',
+        {
+          id: 'fe-claude',
+          name: '小克',
+          avatar: 'lobe:claudecode',
+          specialty: '前端负责人',
+          body: { kind: 'claude' as const },
+          soulPrompt: '严谨',
+          enabled: true,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ],
+      [
+        'fe-codex',
+        {
+          id: 'fe-codex',
+          name: '小G',
+          avatar: 'lobe:codex',
+          specialty: '快手',
+          body: { kind: 'codex' as const },
+          soulPrompt: '幽默',
+          enabled: true,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ],
+    ]);
+
     const md =
-      '请 @fe-claude 和 `@fe-codex` 看看 `@unknown`\n```ts\nconst a = "@fe-claude";\n```';
-    const rewritten = rewriteMemberMentionsForHostMarkdown(md, valid, true);
-    expect(rewritten).toContain('[@fe-claude](__family_member__/fe-claude)');
-    // 行内反引号和三引号代码块保持原样不破坏语法
+      '请 @fe-claude 和 @小G 以及 `@fe-codex` 看看 `@unknown`\n```ts\nconst a = "@fe-claude";\n```';
+    const rewritten = rewriteMemberMentionsForHostMarkdown(md, valid, true, membersMap);
+    // @fe-claude 自动高亮显示为名称 [@小克]，@小G 同样识别为 [@小克/@小G]
+    expect(rewritten).toContain('[@小克](__family_member__/fe-claude)');
+    expect(rewritten).toContain('[@小G](__family_member__/fe-codex)');
     expect(rewritten).toContain('`@fe-codex`');
     expect(rewritten).toContain('const a = "@fe-claude";');
 
-    const draft = buildMainSessionHandoffDraft('大前端 (@fe-claude)', [
+    const draft = buildMainSessionHandoffDraft('小克', [
       { path: 'SKILL.md', kind: 'modified', additions: 40, deletions: 12 },
       { path: 'references/zh.md', kind: 'added', additions: 88 },
     ]);
     expect(draft).toContain('- [修改] `SKILL.md` (+40 / -12)');
     expect(draft).toContain('- [新增] `references/zh.md` (+88)');
-    expect(draft).toContain('请先读取上述最新文件内容');
+
+    // 验证附件存储保留原始干净文件名（供 DSH openResource 预览显示原名）与工作区文件检索
+    const attDir = createTempDir('dsh-att-');
+    const store = new FamilyAttachmentStore(attDir);
+    const saved = store.saveUploadedFile({
+      name: '架构草图.png',
+      mimeType: 'image/png',
+      dataBase64: Buffer.from('fake-png-bytes').toString('base64'),
+    });
+    expect(saved.kind).toBe('image');
+    expect(saved.filePath.endsWith('/架构草图.png')).toBe(true);
+    expect(store.readAttachmentBytes(saved.id)?.buffer.toString('utf8')).toBe('fake-png-bytes');
+
+    mkdirSync(join(attDir, 'ws/src'), { recursive: true });
+    writeFileSync(join(attDir, 'ws/src/LoginModal.tsx'), 'export const x = 1;\n', 'utf8');
+    const files = await searchWorkspaceFiles(join(attDir, 'ws'), 'login');
+    expect(files[0]).toEqual({
+      path: 'src/LoginModal.tsx',
+      name: 'LoginModal.tsx',
+      parentDir: 'src',
+    });
   });
 });

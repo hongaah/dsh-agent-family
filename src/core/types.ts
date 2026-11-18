@@ -177,10 +177,31 @@ export interface WorkspaceFileChange {
   readonly byMemberName?: string;
 }
 
+export interface FamilyMessageAttachment {
+  readonly id: string;
+  readonly kind: 'image' | 'file';
+  readonly name: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+  /** 宿主磁盘上的绝对路径（供 CLI 多模态读图、文件读取及 DSH 原生 openResource 文件预览直接打开） */
+  readonly filePath: string;
+  /** 浏览器缩略图地址 (`/dsh-agent-family/api/attachments/<id>`) */
+  readonly previewUrl: string;
+}
+
+export interface WorkspaceFileCandidate {
+  readonly path: string;
+  readonly name: string;
+  readonly parentDir: string;
+}
+
 export interface PendingMainSyncSummary {
   readonly scopeId: string;
   readonly changedFiles: readonly WorkspaceFileChange[];
   readonly noteCount: number;
+  /** 最新生成的家庭协作纪要 `.md` 文件绝对路径（可用 DSH 原生文件预览直接打开） */
+  readonly latestReceiptPath?: string;
+  readonly latestReceiptTitle?: string;
   readonly updatedAt: string;
 }
 
@@ -191,6 +212,8 @@ export interface MemberChatEntry {
   readonly content: string;
   readonly statusSummary?: string;
   readonly streaming?: boolean;
+  /** 本条消息附带的图片或通用文件附件 */
+  readonly attachments?: readonly FamilyMessageAttachment[];
   /** 该轮成员执行实际落盘的文件变更清单 */
   readonly changedFiles?: readonly WorkspaceFileChange[];
   readonly createdAt: string;
@@ -235,6 +258,8 @@ export interface GroupMessage {
   readonly content: string;
   /** 消息正文中解析出的有效被 `@` 成员 ID 列表 */
   readonly mentions: readonly string[];
+  /** 本条群消息附带的图片或通用文件附件 */
+  readonly attachments?: readonly FamilyMessageAttachment[];
   /** 该成员在本轮群聊发言中实际落盘的文件变更清单 */
   readonly changedFiles?: readonly WorkspaceFileChange[];
   readonly createdAt: string;

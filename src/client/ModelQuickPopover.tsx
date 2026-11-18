@@ -35,22 +35,34 @@ export const EFFORT_PRESETS: ReadonlyArray<{
 
 const catalogMemoryCache = new Map<BodyKind, BodyModelCatalog>();
 
-export function formatShortModelBadge(model?: string, effort?: string): string {
+export function formatShortModelBadge(
+  modelOrBody?: string | { readonly model?: string; readonly reasoningEffort?: string },
+  effort?: string
+): string {
+  const model =
+    typeof modelOrBody === 'object' && modelOrBody !== null
+      ? modelOrBody.model
+      : modelOrBody;
+  const resolvedEffort =
+    typeof modelOrBody === 'object' && modelOrBody !== null
+      ? modelOrBody.reasoningEffort
+      : effort;
+
   const shortModel = model
     ? model.includes('/')
       ? model.slice(model.indexOf('/') + 1)
       : model
     : 'CLI 默认';
   const trimmedModel = shortModel.length > 20 ? `${shortModel.slice(0, 19)}…` : shortModel;
-  if (!effort) return trimmedModel;
+  if (!resolvedEffort) return trimmedModel;
   const effortTag =
-    effort === 'low' || effort === 'none' || effort === 'minimal'
+    resolvedEffort === 'low' || resolvedEffort === 'none' || resolvedEffort === 'minimal'
       ? '极速'
-      : effort === 'medium'
+      : resolvedEffort === 'medium'
         ? '均衡'
-        : effort === 'high'
+        : resolvedEffort === 'high'
           ? '深度'
-          : effort;
+          : resolvedEffort;
   return `${trimmedModel} · ${effortTag}`;
 }
 
@@ -485,17 +497,26 @@ export function MemberModelQuickPopover({
   const badgeText = formatShortModelBadge(member.body.model, member.body.reasoningEffort);
 
   return (
-    <div ref={wrapRef} style={{ position: 'relative' }}>
+    <div ref={wrapRef} style={{ position: 'relative', minWidth: 0 }}>
       <button
         type="button"
-        className="sh-btn sh-btn-outline sh-btn-sm"
-        title="点击秒切该成员的 CLI 模型与思考快慢（支持会话内热切换）"
+        className="sh-btn sh-btn-outline sh-btn-sm sh-model-pill-btn"
+        title={`点击切换模型与思考快慢（当前：${badgeText}）`}
         onClick={() => setOpen((v) => !v)}
-        style={{ height: 26, padding: '0 8px', fontSize: 11.5, gap: 5 }}
+        style={{ height: 26, padding: '0 8px', fontSize: 11.5, gap: 5, maxWidth: 172 }}
       >
-        <Cpu size={12} />
-        <span>{badgeText}</span>
-        <ChevronDown size={11} style={{ opacity: 0.65 }} />
+        <Cpu size={12} style={{ flexShrink: 0 }} />
+        <span
+          style={{
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            minWidth: 0,
+          }}
+        >
+          {badgeText}
+        </span>
+        <ChevronDown size={11} style={{ opacity: 0.65, flexShrink: 0 }} />
       </button>
 
       {open && (
@@ -506,7 +527,7 @@ export function MemberModelQuickPopover({
             position: 'absolute',
             right: 0,
             top: 'calc(100% + 6px)',
-            width: 326,
+            width: 'min(326px, calc(100vw - 24px))',
             padding: 11,
             borderRadius: 10,
             border: '1px solid var(--sh-border)',

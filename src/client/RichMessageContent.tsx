@@ -1,5 +1,14 @@
 import { Check, Copy, WrapText } from 'lucide-react';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+
+import type { FamilyMember } from '../core/types.ts';
+import {
+  FileReferenceHighlightChip,
+  MemberMentionPill,
+} from './MemberHoverChip.tsx';
+import { MemberAvatar } from './MemberAvatar.tsx';
+import { formatShortModelBadge } from './ModelQuickPopover.tsx';
+import { PERMISSION_MODE_METAS } from '../core/permission-policy.ts';
 
 declare const require: ((id: string) => unknown) | undefined;
 
@@ -7,6 +16,7 @@ export interface RichMessageContentProps {
   readonly content: string;
   readonly streaming?: boolean;
   readonly validMemberIds?: ReadonlySet<string>;
+  readonly membersById?: ReadonlyMap<string, FamilyMember>;
   readonly knownFilePaths?: readonly string[];
   readonly onSelectMember?: (memberId: string) => void;
   readonly onOpenFile?: (filePath: string, line?: number) => void;
@@ -115,7 +125,7 @@ function getHostMarkdownPrimitives(): HostMarkdownPrimitives | null {
       }
     }
   } catch {
-    // 独立浏览器预览或单元测试环境未挂载 DSH ModuleLoader 时走内置完整 Markdown 渲染器
+    // 独立浏览器预览或单元测试环境走内置完整 Markdown 渲染器
   }
   cachedHostPrimitives = null;
   return null;
@@ -183,31 +193,79 @@ function resolveInlineFileTarget(
   return undefined;
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
 /**
- * 在不破坏代码块和行内反引号的前提下，将普通正文中的 `@成员ID` 转为受控本地链接，
- * 交给 `MarkdownDelegateProvider.openFile` 拦截实现成员跳转。
+ * 在不破坏代码块和行内反引号的前提下：
+ * 1. 将普通正文中的 `@成员ID` 或 `@成员名称` 统一转为高亮显示 **成员名称** 的受控链接 `[@小克](__family_member__/fe-claude)`；
+ * 2. 将普通正文中的 `@文件路径` 转为受控本地文件链接 `[📄 文件名](路径)`，点击直接走 DSH 原生文件预览。
  */
 export function rewriteMemberMentionsForHostMarkdown(
   markdown: string,
   validMemberIds?: ReadonlySet<string>,
-  hasSelectHandler?: boolean
+  hasSelectHandler: boolean = true,
+  membersById?: ReadonlyMap<string, FamilyMember>
 ): string {
-  if (!hasSelectHandler || !markdown.includes('@')) {
+  if (!markdown.includes('@')) {
     return markdown;
   }
 
-  // 保护三引号代码块、行内代码以及已有的 Markdown 链接 [...] (...)
   const protectedRe = /(```[\s\S]*?```|`[^`\n]+`|\[[^\]]*\]\([^)]*\))/gu;
   let result = '';
   let cursor = 0;
 
-  const replacePlainChunk = (chunk: string): string =>
-    chunk.replace(/(^|[^A-Za-z0-9_/`])@([a-z][a-z0-9-]{0,31})\b/gu, (full, prefix: string, id: string) => {
-      if (validMemberIds && !validMemberIds.has(id)) {
-        return full;
+  const nameToMember = new Map<string, FamilyMember>();
+  if (membersById) {
+    for (const m of membersById.values()) {
+      if (m.name.trim()) {
+        nameToMember.set(m.name.trim(), m);
       }
-      return `${prefix}[@${id}](${MEMBER_LINK_PREFIX}${id})`;
-    });
+    }
+  }
+  const sortedNames = Array.from(nameToMember.keys()).sort((a, b) => b.length - a.length);
+  const namesPattern =
+    sortedNames.length > 0 ? sortedNames.map(escapeRegExp).join('|') : '';
+
+  const replacePlainChunk = (chunk: string): string => {
+    let next = chunk;
+
+    // 1) 先替换 @成员名称 -> [@成员名称](__family_member__/id)
+    if (hasSelectHandler && namesPattern) {
+      const nameRe = new RegExp(`(^|[^A-Za-z0-9_/\`])@(${namesPattern})`, 'gu');
+      next = next.replace(nameRe, (full, prefix: string, matchedName: string) => {
+        const m = nameToMember.get(matchedName);
+        if (!m) return full;
+        return `${prefix}[@${m.name}](${MEMBER_LINK_PREFIX}${m.id})`;
+      });
+    }
+
+    // 2) 再替换 @成员ID -> [@成员名称](__family_member__/id)（界面统一展示名称而非生硬 ID！）
+    if (hasSelectHandler) {
+      next = next.replace(
+        /(^|[^A-Za-z0-9_/`[])@([a-z][a-z0-9-]{0,31})\b/gu,
+        (full, prefix: string, id: string) => {
+          if (validMemberIds && !validMemberIds.has(id)) {
+            return full;
+          }
+          const displayName = membersById?.get(id)?.name ?? id;
+          return `${prefix}[@${displayName}](${MEMBER_LINK_PREFIX}${id})`;
+        }
+      );
+    }
+
+    // 3) 替换正文中的 @文件路径 引用 -> [📄 文件名](路径)
+    next = next.replace(
+      /(^|[\s(（])@((?:\.\/)?(?:[A-Za-z0-9_.\u4e00-\u9fa5-]+\/)+[A-Za-z0-9_.\u4e00-\u9fa5-]+\.[A-Za-z0-9]{1,10})/gu,
+      (_full, prefix: string, filePath: string) => {
+        const cleanPath = filePath.replace(/^\.\//u, '');
+        return `${prefix}[📄 ${baseNameOf(cleanPath)}](${cleanPath})`;
+      }
+    );
+
+    return next;
+  };
 
   for (const match of markdown.matchAll(protectedRe)) {
     const idx = match.index ?? 0;
@@ -224,7 +282,7 @@ export function rewriteMemberMentionsForHostMarkdown(
 }
 
 /* ============================================================================
- * 独立环境完整增强型 Markdown 兜底渲染器（支持 H1-H6、表格、引用、有序/无序列表、代码块、链接、@成员、文件点击）
+ * 独立环境完整增强型 Markdown 兜底渲染器
  * ========================================================================== */
 
 interface ParsedSegment {
@@ -239,7 +297,6 @@ function splitCodeBlocks(raw: string): ParsedSegment[] {
   let lastIndex = 0;
 
   for (const match of raw.matchAll(fenceRegex)) {
-    // 仅当确实出现开头 ``` 时分割（兼容流式未闭合代码块）
     if (!match[0].startsWith('```')) continue;
     const start = match.index ?? 0;
     if (start > lastIndex) {
@@ -263,17 +320,38 @@ function renderInlineTokens(
   line: string,
   options: {
     readonly validMemberIds?: ReadonlySet<string>;
+    readonly membersById?: ReadonlyMap<string, FamilyMember>;
     readonly knownFilePaths?: readonly string[];
     readonly onSelectMember?: (memberId: string) => void;
     readonly onOpenFile?: (filePath: string, line?: number) => void;
   }
 ): React.ReactNode[] {
-  const { validMemberIds, knownFilePaths = [], onSelectMember, onOpenFile } = options;
+  const { validMemberIds, membersById, knownFilePaths = [], onSelectMember, onOpenFile } = options;
   const nodes: React.ReactNode[] = [];
-  const tokenRegex =
-    /(`[^`\n]+`|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\*[^*\s][^*\n]*?\*|\[[^\]]+\]\([^)\s]+\)|@[a-z][a-z0-9-]{0,31}\b)/gu;
+
+  const nameEntries = membersById
+    ? Array.from(membersById.values())
+        .filter((m) => Boolean(m.name.trim()))
+        .sort((a, b) => b.name.length - a.name.length)
+    : [];
+  const nameAlt =
+    nameEntries.length > 0
+      ? `|@(?:${nameEntries.map((m) => escapeRegExp(m.name.trim())).join('|')})`
+      : '';
+
+  const tokenRegex = new RegExp(
+    `(\`[^\`\\n]+\`|\\*\\*[^*\\n]+\\*\\*|~~[^~\\n]+~~|\\*[^*\\s][^*\\n]*?\\*|\\[[^\\]]+\\]\\([^)\\s]+\\)|@(?:\\.\\/)?(?:[A-Za-z0-9_.\\u4e00-\\u9fa5-]+\\/)+[A-Za-z0-9_.\\u4e00-\\u9fa5-]+\\.[A-Za-z0-9]{1,10}${nameAlt}|@[a-z][a-z0-9-]{0,31}\\b)`,
+    'gu'
+  );
+
   let cursor = 0;
   let keySeq = 0;
+
+  const findMemberByToken = (rawWithoutAt: string): FamilyMember | undefined => {
+    const byId = membersById?.get(rawWithoutAt);
+    if (byId) return byId;
+    return nameEntries.find((m) => m.name.trim() === rawWithoutAt);
+  };
 
   for (const match of line.matchAll(tokenRegex)) {
     const idx = match.index ?? 0;
@@ -285,19 +363,18 @@ function renderInlineTokens(
 
     if (token.startsWith('`') && token.endsWith('`')) {
       const inner = token.slice(1, -1);
-      if (inner.startsWith('@') && onSelectMember) {
-        const mId = inner.slice(1);
-        if (!validMemberIds || validMemberIds.has(mId)) {
+      if (inner.startsWith('@')) {
+        const mKey = inner.slice(1);
+        const foundMember = findMemberByToken(mKey);
+        if (foundMember || (!validMemberIds && onSelectMember) || validMemberIds?.has(mKey)) {
+          const targetId = foundMember?.id ?? mKey;
           nodes.push(
-            <button
+            <MemberMentionPill
               key={keySeq}
-              type="button"
-              className="sh-mention-pill"
-              onClick={() => onSelectMember(mId)}
-              title={`查看 @${mId}`}
-            >
-              {inner}
-            </button>
+              member={foundMember}
+              fallbackId={targetId}
+              onClick={onSelectMember ? () => onSelectMember(targetId) : undefined}
+            />
           );
           cursor = idx + token.length;
           continue;
@@ -306,15 +383,12 @@ function renderInlineTokens(
       const fileTarget = onOpenFile ? resolveInlineFileTarget(knownFilePaths, inner) : undefined;
       if (fileTarget && onOpenFile) {
         nodes.push(
-          <button
+          <FileReferenceHighlightChip
             key={keySeq}
-            type="button"
-            className="sh-inline-code sh-inline-file-link"
-            onClick={() => onOpenFile(fileTarget.path, fileTarget.line)}
-            title={`在侧边栏打开 ${fileTarget.path}${fileTarget.line ? `:${fileTarget.line}` : ''}`}
-          >
-            {inner}
-          </button>
+            label={inner}
+            fullPath={fileTarget.path}
+            onOpen={() => onOpenFile(fileTarget.path, fileTarget.line)}
+          />
         );
       } else {
         nodes.push(
@@ -349,15 +423,12 @@ function renderInlineTokens(
         } else if (onOpenFile) {
           const parsed = parsePathAndLine(href);
           nodes.push(
-            <button
+            <FileReferenceHighlightChip
               key={keySeq}
-              type="button"
-              className="sh-md-link-btn"
-              onClick={() => onOpenFile(parsed.path, parsed.line)}
-              title={`打开 ${parsed.path}`}
-            >
-              {label}
-            </button>
+              label={label.replace(/^📄\s*/u, '')}
+              fullPath={parsed.path}
+              onOpen={() => onOpenFile(parsed.path, parsed.line)}
+            />
           );
         } else {
           nodes.push(label);
@@ -366,18 +437,27 @@ function renderInlineTokens(
         nodes.push(token);
       }
     } else if (token.startsWith('@')) {
-      const memberId = token.slice(1);
-      if (!validMemberIds || validMemberIds.has(memberId)) {
+      const rawRef = token.slice(1);
+      const foundMember = findMemberByToken(rawRef);
+      if (foundMember || (validMemberIds && validMemberIds.has(rawRef))) {
+        const targetId = foundMember?.id ?? rawRef;
         nodes.push(
-          <button
+          <MemberMentionPill
             key={keySeq}
-            type="button"
-            className="sh-mention-pill"
-            onClick={() => onSelectMember?.(memberId)}
-            title={`查看 @${memberId}`}
-          >
-            @{memberId}
-          </button>
+            member={foundMember}
+            fallbackId={targetId}
+            onClick={onSelectMember ? () => onSelectMember(targetId) : undefined}
+          />
+        );
+      } else if (rawRef.includes('/') && onOpenFile) {
+        const cleanPath = rawRef.replace(/^\.\//u, '');
+        nodes.push(
+          <FileReferenceHighlightChip
+            key={keySeq}
+            label={baseNameOf(cleanPath)}
+            fullPath={cleanPath}
+            onOpen={() => onOpenFile(cleanPath)}
+          />
         );
       } else {
         nodes.push(token);
@@ -475,6 +555,7 @@ function renderMarkdownBlocksFallback(
   rawText: string,
   inlineOpts: {
     readonly validMemberIds?: ReadonlySet<string>;
+    readonly membersById?: ReadonlyMap<string, FamilyMember>;
     readonly knownFilePaths?: readonly string[];
     readonly onSelectMember?: (memberId: string) => void;
     readonly onOpenFile?: (filePath: string, line?: number) => void;
@@ -494,7 +575,6 @@ function renderMarkdownBlocksFallback(
       continue;
     }
 
-    // 1. 水平分割线
     if (/^(?:-{3,}|\*{3,}|_{3,})$/u.test(trimmed)) {
       key += 1;
       blocks.push(<hr key={key} className="sh-md-hr" />);
@@ -502,7 +582,6 @@ function renderMarkdownBlocksFallback(
       continue;
     }
 
-    // 2. 标题 H1 ~ H6
     const headingMatch = /^(#{1,6})\s+(.+)$/u.exec(trimmed);
     if (headingMatch) {
       const level = Math.min(6, (headingMatch[1] ?? '#').length) as 1 | 2 | 3 | 4 | 5 | 6;
@@ -518,7 +597,6 @@ function renderMarkdownBlocksFallback(
       continue;
     }
 
-    // 3. GFM 表格
     const nextLine = lines[i + 1];
     if (trimmed.includes('|') && nextLine !== undefined && isTableSeparatorLine(nextLine)) {
       const headers = splitTableCells(trimmed);
@@ -556,7 +634,6 @@ function renderMarkdownBlocksFallback(
       continue;
     }
 
-    // 4. 引用块 >
     if (/^>\s?/u.test(trimmed)) {
       const quoteLines: string[] = [];
       while (i < lines.length && /^>\s?/u.test((lines[i] ?? '').trim())) {
@@ -577,7 +654,6 @@ function renderMarkdownBlocksFallback(
       continue;
     }
 
-    // 5. 无序列表
     if (/^\s*[-*•]\s+/u.test(line)) {
       const items: string[] = [];
       while (i < lines.length && /^\s*[-*•]\s+/u.test(lines[i] ?? '')) {
@@ -595,7 +671,6 @@ function renderMarkdownBlocksFallback(
       continue;
     }
 
-    // 6. 有序列表
     if (/^\s*\d+[.)]\s+/u.test(line)) {
       const items: string[] = [];
       while (i < lines.length && /^\s*\d+[.)]\s+/u.test(lines[i] ?? '')) {
@@ -613,7 +688,6 @@ function renderMarkdownBlocksFallback(
       continue;
     }
 
-    // 7. 普通段落（遇到下一个块级语法提前收束）
     const paraLines: string[] = [line];
     i += 1;
     while (i < lines.length) {
@@ -656,25 +730,40 @@ export function RichMessageContent({
   content,
   streaming = false,
   validMemberIds,
+  membersById,
   knownFilePaths = [],
   onSelectMember,
   onOpenFile,
 }: RichMessageContentProps): React.ReactElement {
   const hostPrimitives = getHostMarkdownPrimitives();
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [hoveredHostMember, setHoveredHostMember] = useState<{
+    readonly member: FamilyMember;
+    readonly x: number;
+    readonly y: number;
+  } | null>(null);
 
   const knownPathsKey = knownFilePaths.join('\n');
-  const memberIdsKey = useMemo(
-    () => (validMemberIds ? Array.from(validMemberIds).sort().join(',') : ''),
-    [validMemberIds]
-  );
+  const membersKey = useMemo(() => {
+    if (!membersById) return validMemberIds ? Array.from(validMemberIds).sort().join(',') : '';
+    return Array.from(membersById.values())
+      .map((m) => `${m.id}:${m.name}`)
+      .sort()
+      .join('|');
+  }, [membersById, validMemberIds]);
 
   const rewrittenText = useMemo(
     () =>
       hostPrimitives
-        ? rewriteMemberMentionsForHostMarkdown(content, validMemberIds, Boolean(onSelectMember))
+        ? rewriteMemberMentionsForHostMarkdown(
+            content,
+            validMemberIds,
+            Boolean(onSelectMember),
+            membersById
+          )
         : content,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [hostPrimitives, content, memberIdsKey, Boolean(onSelectMember)]
+    [hostPrimitives, content, membersKey, Boolean(onSelectMember)]
   );
 
   const handleHostOpenFile = useCallback(
@@ -699,11 +788,21 @@ export function RichMessageContent({
         const trimmed = token.trim();
         if (!trimmed) return undefined;
         if (trimmed.startsWith('@') && onSelectMember) {
-          const mId = trimmed.slice(1);
-          if (!validMemberIds || validMemberIds.has(mId)) {
+          const mKey = trimmed.slice(1);
+          const byId = membersById?.get(mKey);
+          const byName =
+            byId ??
+            (membersById
+              ? Array.from(membersById.values()).find((m) => m.name.trim() === mKey)
+              : undefined);
+          if (byName || (!validMemberIds || validMemberIds.has(mKey))) {
+            const targetId = byName?.id ?? mKey;
+            const titleDesc = byName
+              ? `${byName.name} (@${byName.id} · ${byName.body.kind}) — ${byName.specialty}`
+              : `查看家庭成员 @${targetId}`;
             return {
-              open: () => onSelectMember(mId),
-              label: `查看家庭成员 @${mId}`,
+              open: () => onSelectMember(targetId),
+              label: titleDesc,
             };
           }
         }
@@ -712,7 +811,7 @@ export function RichMessageContent({
           if (fileTarget) {
             return {
               open: () => onOpenFile(fileTarget.path, fileTarget.line),
-              label: `在侧边栏打开 ${fileTarget.path}${fileTarget.line ? `:${fileTarget.line}` : ''}`,
+              label: `在 DSH 右侧栏预览 ${fileTarget.path}${fileTarget.line ? `:${fileTarget.line}` : ''}`,
             };
           }
         }
@@ -720,13 +819,58 @@ export function RichMessageContent({
       },
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [knownPathsKey, memberIdsKey, onOpenFile, onSelectMember]);
+  }, [knownPathsKey, membersKey, onOpenFile, onSelectMember]);
 
-  // 优先复用 DSH 宿主原生的流式 MarkdownText + MarkdownDelegateProvider（与左屏主对话 100% 视觉同构）
+  const handleHostMouseMove = useCallback(
+    (ev: React.MouseEvent<HTMLDivElement>) => {
+      if (!membersById || membersById.size === 0) return;
+      const target = (ev.target as HTMLElement | null)?.closest<HTMLElement>('a, button');
+      if (!target) {
+        if (hoveredHostMember) setHoveredHostMember(null);
+        return;
+      }
+      const text = (target.textContent ?? '').trim();
+      if (!text.startsWith('@')) {
+        if (hoveredHostMember) setHoveredHostMember(null);
+        return;
+      }
+      const key = text.slice(1);
+      const found =
+        membersById.get(key) ??
+        Array.from(membersById.values()).find((m) => m.name.trim() === key);
+      if (!found) {
+        if (hoveredHostMember) setHoveredHostMember(null);
+        return;
+      }
+      const containerRect = containerRef.current?.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      if (containerRect) {
+        setHoveredHostMember({
+          member: found,
+          x: Math.max(0, Math.min(containerRect.width - 240, targetRect.left - containerRect.left)),
+          y: targetRect.bottom - containerRect.top + 6,
+        });
+      }
+    },
+    [membersById, hoveredHostMember]
+  );
+
+  // 优先复用 DSH 宿主原生的流式 MarkdownText + MarkdownDelegateProvider
   if (hostPrimitives) {
     const { MarkdownText, MarkdownDelegateProvider } = hostPrimitives;
+    const hm = hoveredHostMember?.member;
+    const permLabel = hm
+      ? (PERMISSION_MODE_METAS.find((p) => p.value === (hm.body.permissionMode ?? 'ask'))
+          ?.shortLabel ?? '每次询问')
+      : '';
     return (
-      <div className="sh-prose sh-host-markdown">
+      <div
+        ref={containerRef}
+        className="sh-prose sh-host-markdown"
+        style={{ position: 'relative' }}
+        onMouseOver={handleHostMouseMove}
+        onMouseLeave={() => setHoveredHostMember(null)}
+      >
         <MarkdownDelegateProvider openFile={handleHostOpenFile} fileImages={HOST_FILE_IMAGES}>
           <MarkdownText
             text={rewrittenText}
@@ -735,6 +879,43 @@ export function RichMessageContent({
             {...(hostFileMentions ? { fileMentions: hostFileMentions } : {})}
           />
         </MarkdownDelegateProvider>
+
+        {hoveredHostMember && hm && (
+          <div
+            className="sh-member-hovercard"
+            style={{
+              left: hoveredHostMember.x,
+              top: hoveredHostMember.y,
+              bottom: 'auto',
+              pointerEvents: 'none',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+              <MemberAvatar
+                avatar={hm.avatar}
+                bodyKind={hm.body.kind}
+                alt={hm.name}
+                size={30}
+              />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <strong style={{ fontSize: 13 }}>{hm.name}</strong>
+                  <span className="sh-badge">@{hm.id}</span>
+                </div>
+                <div style={{ display: 'flex', gap: 4, marginTop: 3, flexWrap: 'wrap' }}>
+                  <span className="sh-badge">{hm.body.kind}</span>
+                  <span className="sh-badge">{permLabel}</span>
+                  {formatShortModelBadge(hm.body) !== 'CLI 默认' && (
+                    <span className="sh-badge">{formatShortModelBadge(hm.body)}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--sh-muted-fg)', lineHeight: 1.45 }}>
+              {hm.specialty}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -743,6 +924,7 @@ export function RichMessageContent({
   const segments = splitCodeBlocks(content);
   const inlineOpts = {
     validMemberIds,
+    membersById,
     knownFilePaths,
     onSelectMember,
     onOpenFile,

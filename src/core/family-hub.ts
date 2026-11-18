@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { formatAttachmentsForAgentPrompt } from './attachment-store.ts';
 import { formatAvatarPrefixForPrompt } from './avatar-utils.ts';
 import { resolveNodeExecutable } from './cli-locator.ts';
 import type { DshSessionContextBridge } from './dsh-context-bridge.ts';
@@ -22,6 +23,7 @@ import type {
   BodyKind,
   BodySpec,
   FamilyMember,
+  FamilyMessageAttachment,
   FamilyRealtimeEvent,
   FamilySharedProfile,
   MemberActivityState,
@@ -104,6 +106,7 @@ export interface SendMemberMessageInput {
   readonly message: string;
   /** 可选 UI 展示文案（省略时使用 message；用于来电场景隐藏冗长系统提示语） */
   readonly displayMessage?: string;
+  readonly attachments?: readonly FamilyMessageAttachment[];
   readonly cwd: string;
   readonly fresh?: boolean;
   readonly callChain?: readonly string[];
@@ -446,6 +449,9 @@ export class FamilyHub {
           role: input.senderRole,
           authorName: input.senderName,
           content: input.displayMessage ?? input.message,
+          ...(input.attachments && input.attachments.length > 0
+            ? { attachments: input.attachments }
+            : {}),
           createdAt: new Date().toISOString(),
         });
         if (input.senderRole === 'human') {
@@ -577,9 +583,13 @@ export class FamilyHub {
         const prefixBlocks = [profileUpdateNotice, workspaceBriefing, sessionBriefing]
           .filter(Boolean)
           .join('\n\n');
-        const effectivePrompt = prefixBlocks
-          ? `${prefixBlocks}\n\n${input.message}`
+        const attachmentsBlock = formatAttachmentsForAgentPrompt(input.attachments);
+        const messageWithAttachments = attachmentsBlock
+          ? [input.message, attachmentsBlock].filter(Boolean).join('\n\n')
           : input.message;
+        const effectivePrompt = prefixBlocks
+          ? `${prefixBlocks}\n\n${messageWithAttachments}`
+          : messageWithAttachments;
 
         const beforeWorkspace = await captureWorkspaceSnapshot(input.cwd);
         watchdog.touch();
@@ -587,7 +597,11 @@ export class FamilyHub {
         let streamedText = '';
         let finalText = '';
 
-        for await (const ev of actor.session.sendTurn(effectivePrompt, turnController.signal)) {
+        for await (const ev of actor.session.sendTurn(
+          effectivePrompt,
+          turnController.signal,
+          input.attachments
+        )) {
           if (ev.kind === 'text_delta') {
             watchdog.touch();
             streamedText += ev.delta;

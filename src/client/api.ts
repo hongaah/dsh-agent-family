@@ -9,6 +9,7 @@ import type {
   FamilyFocusTarget,
   FamilyGroupRoom,
   FamilyMember,
+  FamilyMessageAttachment,
   FamilyRealtimeEvent,
   FamilySharedProfile,
   MemberRuntimeSnapshot,
@@ -18,6 +19,7 @@ import type {
   StarterMemberTemplate,
   UpdateFamilyProfileInput,
   UpdateMemberInput,
+  WorkspaceFileCandidate,
 } from '../core/types.ts';
 
 const API_BASE = '/dsh-agent-family/api';
@@ -322,12 +324,52 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   return requestJsonWithRetry<T>(path, init);
 }
 
+export function readBrowserFileAsBase64(file: File): Promise<string> {
+  return new Promise<string>((resolveFile, rejectFile) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolveFile(reader.result);
+      } else {
+        rejectFile(new Error('读取文件失败'));
+      }
+    };
+    reader.onerror = () => rejectFile(new Error('读取文件失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
 export const familyClientApi = {
   uploadAvatar(dataUrl: string): Promise<{ filename: string; url: string; mimeType: string }> {
     return requestJson<{ filename: string; url: string; mimeType: string }>('/avatars', {
       method: 'POST',
       body: JSON.stringify({ dataUrl }),
     });
+  },
+  async uploadAttachmentFile(file: File): Promise<{ attachment: FamilyMessageAttachment }> {
+    const dataBase64 = await readBrowserFileAsBase64(file);
+    return requestJson<{ attachment: FamilyMessageAttachment }>('/attachments', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: file.name || 'clipboard-image.png',
+        mimeType: file.type || undefined,
+        dataBase64,
+      }),
+    });
+  },
+  searchWorkspaceFiles(
+    scopeId: string,
+    query: string,
+    cwd?: string
+  ): Promise<{ files: readonly WorkspaceFileCandidate[]; cwd: string }> {
+    const qs = new URLSearchParams({
+      scopeId,
+      query,
+      ...(cwd ? { cwd } : {}),
+    }).toString();
+    return requestJson<{ files: readonly WorkspaceFileCandidate[]; cwd: string }>(
+      `/workspace-files?${qs}`
+    );
   },
   async bootstrap(scopeId: string): Promise<FamilyBootstrapState> {
     const qs = new URLSearchParams({ scopeId }).toString();
@@ -389,6 +431,7 @@ export const familyClientApi = {
     scopeId: string;
     memberId: string;
     message: string;
+    attachmentIds?: readonly string[];
     cwd?: string;
     fresh?: boolean;
   }): Promise<{ accepted?: boolean; finalText?: string; snapshot?: MemberRuntimeSnapshot }> {
@@ -471,6 +514,7 @@ export const familyClientApi = {
     scopeId: string;
     groupId: string;
     content: string;
+    attachmentIds?: readonly string[];
     cwd?: string;
   }): Promise<{ accepted?: boolean; room?: FamilyGroupRoom }> {
     const clientRequestId = makeClientRequestId();

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -232,7 +232,11 @@ describe('Cordis Host Plugin (Tools, SystemPrompt, @Mention Pre-Step, Web API & 
     );
     expect(decision.kind).toBe('enter');
     if (decision.kind === 'enter') {
-      const rewrittenText = decision.messages[0]?.content[0]?.text ?? '';
+      // 用户原始提问消息保持 100% 纯净，不被内部路由提示污染
+      expect(decision.messages[0]?.content[0]?.text).not.toContain('<family_direct_mention>');
+      const injected = decision.messages[1];
+      expect(injected?.source?.kind).toBe('dsh-agent-family');
+      const rewrittenText = injected?.content[0]?.text ?? '';
       expect(rewrittenText).toContain('family_assign');
       expect(rewrittenText).toContain('fe-sis');
     }
@@ -660,9 +664,17 @@ describe('Cordis Host Plugin (Tools, SystemPrompt, @Mention Pre-Step, Web API & 
     );
     expect(turnAfterSlash.kind).toBe('enter');
     if (turnAfterSlash.kind === 'enter') {
-      const augmented = turnAfterSlash.messages[0]?.content[0]?.text ?? '';
-      expect(augmented).toContain('family_collaboration_receipt');
-      expect(augmented).toContain('小前端已修复 Login.tsx 圆角');
+      // 1) 用户自己的提问气泡保持 100% 原样，绝不夹带大段 XML 回执文本
+      expect(turnAfterSlash.messages[0]?.content[0]?.text).toBe('现在我们继续写单元测试吧');
+      // 2) 独立注入 source.kind === 'dsh-agent-family' 的紧凑索引消息，且完整对话落盘在独立 .md 文件中
+      const hiddenCtx = turnAfterSlash.messages[1];
+      expect(hiddenCtx?.source?.kind).toBe('dsh-agent-family');
+      const indexText = hiddenCtx?.content[0]?.text ?? '';
+      expect(indexText).toContain('家庭协作纪要-');
+      const mdPathMatch = /`([^`]+家庭协作纪要-[^`]+\.md)`/u.exec(indexText);
+      expect(mdPathMatch?.[1]).toBeTruthy();
+      const savedMd = readFileSync(mdPathMatch![1]!, 'utf8');
+      expect(savedMd).toContain('小前端已修复 Login.tsx 圆角');
     }
 
     // 再下一轮不再重复注入已消费过的回执

@@ -2,6 +2,7 @@ import type {
   BodyKind,
   BodySpec,
   FamilyMember,
+  FamilyMessageAttachment,
   MemberStreamEvent,
   PhoneMcpLaunchSpec,
 } from '../core/types.ts';
@@ -35,7 +36,11 @@ export interface LiveMemberSession {
    * 返回 `true` 表示已在当前常驻会话内即时生效；返回 `false` 表示需在空闲时重启底层 CLI 进程生效。
    */
   reconfigure?(nextBody: BodySpec): Promise<boolean>;
-  sendTurn(prompt: string, signal: AbortSignal): AsyncIterable<MemberStreamEvent>;
+  sendTurn(
+    prompt: string,
+    signal: AbortSignal,
+    attachments?: readonly FamilyMessageAttachment[]
+  ): AsyncIterable<MemberStreamEvent>;
   replyApproval(requestId: string, optionId: string): Promise<void>;
   dispose(): Promise<void>;
 }
