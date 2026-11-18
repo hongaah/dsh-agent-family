@@ -1,5 +1,5 @@
-import { formatAvatarPrefixForPrompt } from './avatar-utils.ts';
-import type { FamilyMember } from './types.ts';
+import { formatAvatarPrefixForPrompt } from "./avatar-utils.ts";
+import type { FamilyMember } from "./types.ts";
 
 /**
  * 将用户赋予的「灵魂提示词」与有温度的家庭身份、语境自适应相处默契（闲聊卸下工牌 vs 正事显手艺）
@@ -7,18 +7,20 @@ import type { FamilyMember } from './types.ts';
  */
 export function composeAwakeningSoul(
   member: FamilyMember,
-  siblings: readonly FamilyMember[] = []
+  siblings: readonly FamilyMember[] = [],
 ): string {
-  const otherMembers = siblings.filter((item) => item.enabled && item.id !== member.id);
+  const otherMembers = siblings.filter(
+    (item) => item.enabled && item.id !== member.id,
+  );
   const familyDirectoryLine =
     otherMembers.length > 0
       ? otherMembers
           .map(
             (item) =>
-              `- ${formatAvatarPrefixForPrompt(item.avatar)}${item.name} (@${item.id}) [身体: ${item.body.kind}]：${item.specialty}`
+              `- ${formatAvatarPrefixForPrompt(item.avatar)}${item.name} (@${item.id}) [身体: ${item.body.kind}]：${item.specialty}`,
           )
-          .join('\n')
-      : '- （可随时通过随身手机 `phone_contacts` 查看最新在线的家庭成员）';
+          .join("\n")
+      : "- （可随时通过随身手机 `phone_contacts` 查看最新在线的家庭成员）";
 
   return [
     `# 你的家庭身份`,
@@ -48,5 +50,5 @@ export function composeAwakeningSoul(
     `   - 无论谁找你帮忙，合情合理就痛快配合；若认为方案不合理、有隐患或违背你的原则，直接按你的脾气坦诚拒绝并给出靠谱替代建议，绝不盲从。`,
     `4. **群聊不硬凑热闹**：`,
     `   - 在群聊中若前面的家人已经把话接得很到位、或当前话题无需你插嘴，直接只回复 \`[PASS]\` 安静旁听即可，不必发送客套废话。`,
-  ].join('\n');
+  ].join("\n");
 }

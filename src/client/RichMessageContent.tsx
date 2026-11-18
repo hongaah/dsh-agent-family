@@ -1,5 +1,5 @@
-import { Check, Copy } from 'lucide-react';
-import React, { useState } from 'react';
+import { Check, Copy } from "lucide-react";
+import React, { useState } from "react";
 
 export interface RichMessageContentProps {
   readonly content: string;
@@ -8,7 +8,7 @@ export interface RichMessageContentProps {
 }
 
 interface ParsedSegment {
-  readonly kind: 'codeblock' | 'text';
+  readonly kind: "codeblock" | "text";
   readonly lang?: string;
   readonly value: string;
 }
@@ -21,18 +21,18 @@ function splitCodeBlocks(raw: string): ParsedSegment[] {
   for (const match of raw.matchAll(fenceRegex)) {
     const start = match.index ?? 0;
     if (start > lastIndex) {
-      segments.push({ kind: 'text', value: raw.slice(lastIndex, start) });
+      segments.push({ kind: "text", value: raw.slice(lastIndex, start) });
     }
     segments.push({
-      kind: 'codeblock',
-      lang: match[1] || 'code',
-      value: (match[2] ?? '').replace(/\n$/u, ''),
+      kind: "codeblock",
+      lang: match[1] || "code",
+      value: (match[2] ?? "").replace(/\n$/u, ""),
     });
     lastIndex = start + match[0].length;
   }
 
   if (lastIndex < raw.length) {
-    segments.push({ kind: 'text', value: raw.slice(lastIndex) });
+    segments.push({ kind: "text", value: raw.slice(lastIndex) });
   }
   return segments;
 }
@@ -40,7 +40,7 @@ function splitCodeBlocks(raw: string): ParsedSegment[] {
 function renderInlineTokens(
   line: string,
   validMemberIds?: ReadonlySet<string>,
-  onSelectMember?: (memberId: string) => void
+  onSelectMember?: (memberId: string) => void,
 ): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   const tokenRegex = /(`[^`]+`|\*\*[^*]+\*\*|@[a-z][a-z0-9-]{0,31}\b)/gu;
@@ -55,15 +55,15 @@ function renderInlineTokens(
     const token = match[0];
     keySeq += 1;
 
-    if (token.startsWith('`') && token.endsWith('`')) {
+    if (token.startsWith("`") && token.endsWith("`")) {
       nodes.push(
         <code key={keySeq} className="sh-inline-code">
           {token.slice(1, -1)}
-        </code>
+        </code>,
       );
-    } else if (token.startsWith('**') && token.endsWith('**')) {
+    } else if (token.startsWith("**") && token.endsWith("**")) {
       nodes.push(<strong key={keySeq}>{token.slice(2, -2)}</strong>);
-    } else if (token.startsWith('@')) {
+    } else if (token.startsWith("@")) {
       const memberId = token.slice(1);
       if (!validMemberIds || validMemberIds.has(memberId)) {
         nodes.push(
@@ -75,7 +75,7 @@ function renderInlineTokens(
             title={`查看 @${memberId}`}
           >
             @{memberId}
-          </button>
+          </button>,
         );
       } else {
         nodes.push(token);
@@ -114,18 +114,18 @@ function CodeBlockCard({
           type="button"
           onClick={handleCopy}
           style={{
-            display: 'inline-flex',
-            alignItems: 'center',
+            display: "inline-flex",
+            alignItems: "center",
             gap: 4,
-            background: 'transparent',
-            border: 'none',
-            color: 'inherit',
-            cursor: 'pointer',
+            background: "transparent",
+            border: "none",
+            color: "inherit",
+            cursor: "pointer",
             fontSize: 11,
           }}
         >
           {copied ? <Check size={12} /> : <Copy size={12} />}
-          <span>{copied ? '已复制' : '复制'}</span>
+          <span>{copied ? "已复制" : "复制"}</span>
         </button>
       </div>
       <pre>
@@ -145,8 +145,14 @@ export function RichMessageContent({
   return (
     <div className="sh-prose">
       {segments.map((seg, idx) => {
-        if (seg.kind === 'codeblock') {
-          return <CodeBlockCard key={idx} lang={seg.lang ?? 'code'} code={seg.value} />;
+        if (seg.kind === "codeblock") {
+          return (
+            <CodeBlockCard
+              key={idx}
+              lang={seg.lang ?? "code"}
+              code={seg.value}
+            />
+          );
         }
 
         const paragraphs = seg.value.split(/\n{2,}/u);
@@ -155,7 +161,7 @@ export function RichMessageContent({
             {paragraphs.map((para, pIdx) => {
               const trimmed = para.trim();
               if (!trimmed) return null;
-              const lines = trimmed.split('\n');
+              const lines = trimmed.split("\n");
               const isBulletList = lines.every((l) => /^\s*[-*•]\s+/u.test(l));
 
               if (isBulletList) {
@@ -164,9 +170,9 @@ export function RichMessageContent({
                     {lines.map((l, lIdx) => (
                       <li key={lIdx}>
                         {renderInlineTokens(
-                          l.replace(/^\s*[-*•]\s+/u, ''),
+                          l.replace(/^\s*[-*•]\s+/u, ""),
                           validMemberIds,
-                          onSelectMember
+                          onSelectMember,
                         )}
                       </li>
                     ))}

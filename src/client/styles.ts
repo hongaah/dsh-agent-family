@@ -1,4 +1,4 @@
-const STYLE_ELEMENT_ID = 'dsh-agent-family-styles';
+const STYLE_ELEMENT_ID = "dsh-agent-family-styles";
 
 /**
  * 纯正 shadcn/ui (Zinc 语义色板) 设计系统：
@@ -997,12 +997,12 @@ html.light .dshfam-root,
 `;
 
 export function ensureFamilyStyles(): () => void {
-  if (typeof document === 'undefined') {
+  if (typeof document === "undefined") {
     return () => undefined;
   }
   let el = document.getElementById(STYLE_ELEMENT_ID) as HTMLStyleElement | null;
   if (!el) {
-    el = document.createElement('style');
+    el = document.createElement("style");
     el.id = STYLE_ELEMENT_ID;
     document.head.appendChild(el);
   }

@@ -1,12 +1,18 @@
-import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { randomUUID } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
 
-import { formatAvatarPrefixForPrompt } from './avatar-utils.ts';
-import { resolveNodeExecutable } from './cli-locator.ts';
-import type { DshSessionContextBridge } from './dsh-context-bridge.ts';
-import type { MemberRegistry } from './member-registry.ts';
-import { composeAwakeningSoul } from './soul-composer.ts';
+import { formatAvatarPrefixForPrompt } from "./avatar-utils.ts";
+import { resolveNodeExecutable } from "./cli-locator.ts";
+import type { DshSessionContextBridge } from "./dsh-context-bridge.ts";
+import type { MemberRegistry } from "./member-registry.ts";
+import { composeAwakeningSoul } from "./soul-composer.ts";
 import type {
   BodyKind,
   BodySpec,
@@ -19,10 +25,13 @@ import type {
   PhoneCallIntent,
   PhoneCallRecord,
   PhoneMcpLaunchSpec,
-} from './types.ts';
-import type { BodyDriver, LiveMemberSession } from '../drivers/driver.ts';
-import type { GroupChatEngine } from './group-chat.ts';
-import { resolvePhoneMcpScriptPath, type FamilyPhoneBus } from '../phone/phone-bus.ts';
+} from "./types.ts";
+import type { BodyDriver, LiveMemberSession } from "../drivers/driver.ts";
+import type { GroupChatEngine } from "./group-chat.ts";
+import {
+  resolvePhoneMcpScriptPath,
+  type FamilyPhoneBus,
+} from "../phone/phone-bus.ts";
 
 export const MAX_CALL_HOPS = 3;
 
@@ -45,7 +54,10 @@ interface MemberActor {
   currentTurnGroupHold: string | null;
 }
 
-function sameStringArray(a: readonly string[] = [], b: readonly string[] = []): boolean {
+function sameStringArray(
+  a: readonly string[] = [],
+  b: readonly string[] = [],
+): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {
     if (a[i] !== b[i]) return false;
@@ -56,23 +68,23 @@ function sameStringArray(a: readonly string[] = [], b: readonly string[] = []): 
 function requiresProcessRestart(prev: BodySpec, next: BodySpec): boolean {
   return (
     prev.kind !== next.kind ||
-    (prev.command ?? '') !== (next.command ?? '') ||
+    (prev.command ?? "") !== (next.command ?? "") ||
     !sameStringArray(prev.extraArgs, next.extraArgs)
   );
 }
 
 function hasModelOrEffortDiff(prev: BodySpec, next: BodySpec): boolean {
   return (
-    (prev.permissionMode ?? 'ask') !== (next.permissionMode ?? 'ask') ||
-    (prev.model ?? '') !== (next.model ?? '') ||
-    (prev.reasoningEffort ?? '') !== (next.reasoningEffort ?? '')
+    (prev.permissionMode ?? "ask") !== (next.permissionMode ?? "ask") ||
+    (prev.model ?? "") !== (next.model ?? "") ||
+    (prev.reasoningEffort ?? "") !== (next.reasoningEffort ?? "")
   );
 }
 
 export interface SendMemberMessageInput {
   readonly scopeId: string;
   readonly memberId: string;
-  readonly senderRole: 'human' | 'lead' | 'peer' | 'system';
+  readonly senderRole: "human" | "lead" | "peer" | "system";
   readonly senderName: string;
   readonly message: string;
   /** 可选 UI 展示文案（省略时使用 message；用于来电场景隐藏冗长系统提示语） */
@@ -124,7 +136,7 @@ export class FamilyHub {
     this.restoreFeedsFromDisk();
     this.restoreCallsFromDisk();
     this.registry.subscribe((members) => {
-      this.emit({ type: 'roster_updated', members });
+      this.emit({ type: "roster_updated", members });
       void this.reconcileActorsWithRoster(members);
     });
   }
@@ -171,13 +183,16 @@ export class FamilyHub {
     return snapshots;
   }
 
-  public getMemberSnapshot(scopeId: string, memberId: string): MemberRuntimeSnapshot {
+  public getMemberSnapshot(
+    scopeId: string,
+    memberId: string,
+  ): MemberRuntimeSnapshot {
     const actor = this.actors.get(this.actorKey(scopeId, memberId));
     if (!actor) {
       return {
         scopeId,
         memberId,
-        state: 'sleeping',
+        state: "sleeping",
         queueLength: 0,
         entries: [],
       };
@@ -201,7 +216,10 @@ export class FamilyHub {
     return [...filtered].slice(-100);
   }
 
-  public async replyApproval(approvalId: string, optionId: string): Promise<boolean> {
+  public async replyApproval(
+    approvalId: string,
+    optionId: string,
+  ): Promise<boolean> {
     const found = this.pendingApprovals.get(approvalId);
     if (!found) return false;
     this.pendingApprovals.delete(approvalId);
@@ -209,12 +227,17 @@ export class FamilyHub {
     if (actor.session?.isAlive()) {
       await actor.session.replyApproval(approval.requestId, optionId);
     }
-    if (actor.state === 'awaiting_approval') {
-      actor.state = actor.currentTurnCallChain.length > 0 ? 'in_call' : 'working';
-      actor.statusText = '已收到批示，继续执行…';
-      this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+    if (actor.state === "awaiting_approval") {
+      actor.state =
+        actor.currentTurnCallChain.length > 0 ? "in_call" : "working";
+      actor.statusText = "已收到批示，继续执行…";
+      this.emit({ type: "member_runtime", snapshot: this.toSnapshot(actor) });
     }
-    this.emit({ type: 'approval_closed', approvalId, selectedOptionId: optionId });
+    this.emit({
+      type: "approval_closed",
+      approvalId,
+      selectedOptionId: optionId,
+    });
     return true;
   }
 
@@ -225,29 +248,38 @@ export class FamilyHub {
     return true;
   }
 
-  public clearMemberEntries(scopeId: string, memberId: string): MemberRuntimeSnapshot {
+  public clearMemberEntries(
+    scopeId: string,
+    memberId: string,
+  ): MemberRuntimeSnapshot {
     const actor = this.ensureActor(scopeId, memberId, process.cwd());
     actor.entries = [];
     actor.lastHumanReadCount = 0;
     this.persistFeedsToDisk();
     const snap = this.toSnapshot(actor);
-    this.emit({ type: 'member_runtime', snapshot: snap });
+    this.emit({ type: "member_runtime", snapshot: snap });
     return snap;
   }
 
-  public markMemberRead(scopeId: string, memberId: string): MemberRuntimeSnapshot {
+  public markMemberRead(
+    scopeId: string,
+    memberId: string,
+  ): MemberRuntimeSnapshot {
     const actor = this.ensureActor(scopeId, memberId, process.cwd());
     if (actor.lastHumanReadCount !== actor.entries.length) {
       actor.lastHumanReadCount = actor.entries.length;
       this.persistFeedsToDisk();
       const snap = this.toSnapshot(actor);
-      this.emit({ type: 'member_runtime', snapshot: snap });
+      this.emit({ type: "member_runtime", snapshot: snap });
       return snap;
     }
     return this.toSnapshot(actor);
   }
 
-  public async resetMemberSession(scopeId: string, memberId: string): Promise<void> {
+  public async resetMemberSession(
+    scopeId: string,
+    memberId: string,
+  ): Promise<void> {
     this.contextBridge?.resetMemberCursor(scopeId, memberId);
     const actor = this.actors.get(this.actorKey(scopeId, memberId));
     if (!actor) return;
@@ -258,17 +290,21 @@ export class FamilyHub {
       actor.awakenedBody = undefined;
       await oldSession.dispose().catch(() => undefined);
     }
-    actor.state = 'sleeping';
-    actor.statusText = '已重置休眠，下次派活将唤醒全新身体';
+    actor.state = "sleeping";
+    actor.statusText = "已重置休眠，下次派活将唤醒全新身体";
     this.clearActorApprovals(actor);
-    this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+    this.emit({ type: "member_runtime", snapshot: this.toSnapshot(actor) });
   }
 
   /**
    * 后台并行预热尚未唤醒的成员 CLI 进程（用于群聊首轮并发消除串行冷启动等待）。
    * 严格挂载在成员自身的 `queueTail` 串行队列上，杜绝重复唤醒竞态。
    */
-  public prewarmMember(scopeId: string, memberId: string, cwd: string): Promise<void> {
+  public prewarmMember(
+    scopeId: string,
+    memberId: string,
+    cwd: string,
+  ): Promise<void> {
     const member = this.registry.get(memberId);
     if (!member || !member.enabled) return Promise.resolve();
     const driver = this.drivers.get(member.body.kind);
@@ -283,7 +319,10 @@ export class FamilyHub {
       actor.cwd = cwd;
       const controller = new AbortController();
       try {
-        const composedSoul = composeAwakeningSoul(latest, this.registry.listEnabled());
+        const composedSoul = composeAwakeningSoul(
+          latest,
+          this.registry.listEnabled(),
+        );
         const phoneMcp = await this.buildPhoneMcpSpec(scopeId, latest.id);
         actor.session = await driver.awaken({
           scopeId,
@@ -295,10 +334,13 @@ export class FamilyHub {
         });
         actor.awakenedBody = latest.body;
         actor.needsReawaken = false;
-        if (actor.state === 'sleeping') {
-          actor.state = 'idle';
-          actor.statusText = '空闲待命';
-          this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+        if (actor.state === "sleeping") {
+          actor.state = "idle";
+          actor.statusText = "空闲待命";
+          this.emit({
+            type: "member_runtime",
+            snapshot: this.toSnapshot(actor),
+          });
         }
       } catch {
         // 预热异常留待正式发言时按标准错误处理
@@ -308,18 +350,22 @@ export class FamilyHub {
     const p = actor.queueTail.then(warmTask, warmTask);
     actor.queueTail = p.then(
       () => undefined,
-      () => undefined
+      () => undefined,
     );
     return p;
   }
 
-  public async sendMemberMessage(input: SendMemberMessageInput): Promise<SendMemberMessageResult> {
+  public async sendMemberMessage(
+    input: SendMemberMessageInput,
+  ): Promise<SendMemberMessageResult> {
     const member = this.registry.get(input.memberId);
     if (!member) {
       throw new Error(`未找到家庭成员 "${input.memberId}"。`);
     }
     if (!member.enabled) {
-      throw new Error(`家庭成员「${member.name} (@${member.id})」当前处于休假停用状态。`);
+      throw new Error(
+        `家庭成员「${member.name} (@${member.id})」当前处于休假停用状态。`,
+      );
     }
     const driver = this.drivers.get(member.body.kind);
     if (!driver) {
@@ -328,7 +374,7 @@ export class FamilyHub {
 
     const actor = this.ensureActor(input.scopeId, member.id, input.cwd);
     actor.queueLength += 1;
-    this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+    this.emit({ type: "member_runtime", snapshot: this.toSnapshot(actor) });
 
     const run = async (): Promise<SendMemberMessageResult> => {
       actor.queueLength = Math.max(0, actor.queueLength - 1);
@@ -345,17 +391,20 @@ export class FamilyHub {
       const turnController = new AbortController();
       const forwardAbort = () => turnController.abort();
       if (input.signal?.aborted) {
-        throw new Error('任务在启动前已被取消。');
+        throw new Error("任务在启动前已被取消。");
       }
-      input.signal?.addEventListener('abort', forwardAbort, { once: true });
+      input.signal?.addEventListener("abort", forwardAbort, { once: true });
 
       actor.activeAbort = turnController;
       actor.cwd = input.cwd;
       actor.currentTurnCallChain = input.callChain ?? [];
       actor.currentTurnGroupHold = input.activeGroupHold ?? null;
-      actor.state = actor.currentTurnCallChain.length > 0 ? 'in_call' : 'working';
+      actor.state =
+        actor.currentTurnCallChain.length > 0 ? "in_call" : "working";
       actor.statusText =
-        actor.currentTurnCallChain.length > 0 ? '正在接听家庭来电…' : '正在专注思考与执行…';
+        actor.currentTurnCallChain.length > 0
+          ? "正在接听家庭来电…"
+          : "正在专注思考与执行…";
       actor.lastActiveAt = new Date().toISOString();
 
       const shouldRecordFeed = input.recordInFeed !== false;
@@ -367,7 +416,7 @@ export class FamilyHub {
           content: input.displayMessage ?? input.message,
           createdAt: new Date().toISOString(),
         });
-        if (input.senderRole === 'human') {
+        if (input.senderRole === "human") {
           actor.lastHumanReadCount = actor.entries.length;
         }
       }
@@ -376,21 +425,30 @@ export class FamilyHub {
       if (shouldRecordFeed) {
         this.appendEntry(actor, {
           id: replyEntryId,
-          role: 'member',
+          role: "member",
           authorName: member.name,
-          content: '',
+          content: "",
           streaming: true,
           createdAt: new Date().toISOString(),
         });
       }
-      this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+      this.emit({ type: "member_runtime", snapshot: this.toSnapshot(actor) });
 
       try {
         if (!actor.session || !actor.session.isAlive()) {
           actor.statusText = `正在唤醒 ${member.body.kind} 身体…`;
-          this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
-          const composedSoul = composeAwakeningSoul(member, this.registry.listEnabled());
-          const phoneMcp = await this.buildPhoneMcpSpec(input.scopeId, member.id);
+          this.emit({
+            type: "member_runtime",
+            snapshot: this.toSnapshot(actor),
+          });
+          const composedSoul = composeAwakeningSoul(
+            member,
+            this.registry.listEnabled(),
+          );
+          const phoneMcp = await this.buildPhoneMcpSpec(
+            input.scopeId,
+            member.id,
+          );
           actor.session = await driver.awaken({
             scopeId: input.scopeId,
             member,
@@ -401,16 +459,26 @@ export class FamilyHub {
           });
           actor.awakenedBody = member.body;
           actor.needsReawaken = false;
-        } else if (actor.awakenedBody && hasModelOrEffortDiff(actor.awakenedBody, member.body)) {
-          const hotApplied = (await actor.session.reconfigure?.(member.body)) ?? false;
+        } else if (
+          actor.awakenedBody &&
+          hasModelOrEffortDiff(actor.awakenedBody, member.body)
+        ) {
+          const hotApplied =
+            (await actor.session.reconfigure?.(member.body)) ?? false;
           if (hotApplied) {
             actor.awakenedBody = member.body;
           } else {
             const stale = actor.session;
             actor.session = null;
             await stale.dispose().catch(() => undefined);
-            const composedSoul = composeAwakeningSoul(member, this.registry.listEnabled());
-            const phoneMcp = await this.buildPhoneMcpSpec(input.scopeId, member.id);
+            const composedSoul = composeAwakeningSoul(
+              member,
+              this.registry.listEnabled(),
+            );
+            const phoneMcp = await this.buildPhoneMcpSpec(
+              input.scopeId,
+              member.id,
+            );
             actor.session = await driver.awaken({
               scopeId: input.scopeId,
               member,
@@ -424,16 +492,22 @@ export class FamilyHub {
         }
 
         const sessionBriefing =
-          this.contextBridge?.buildIncrementalBriefing(input.scopeId, member.id) ?? '';
+          this.contextBridge?.buildIncrementalBriefing(
+            input.scopeId,
+            member.id,
+          ) ?? "";
         const effectivePrompt = sessionBriefing
           ? `${sessionBriefing}\n\n${input.message}`
           : input.message;
 
-        let streamedText = '';
-        let finalText = '';
+        let streamedText = "";
+        let finalText = "";
 
-        for await (const ev of actor.session.sendTurn(effectivePrompt, turnController.signal)) {
-          if (ev.kind === 'text_delta') {
+        for await (const ev of actor.session.sendTurn(
+          effectivePrompt,
+          turnController.signal,
+        )) {
+          if (ev.kind === "text_delta") {
             streamedText += ev.delta;
             input.onDelta?.(streamedText, ev.delta);
             if (shouldRecordFeed) {
@@ -441,16 +515,24 @@ export class FamilyHub {
                 content: streamedText,
                 streaming: true,
               });
-              this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+              this.emit({
+                type: "member_runtime",
+                snapshot: this.toSnapshot(actor),
+              });
             }
-          } else if (ev.kind === 'status') {
+          } else if (ev.kind === "status") {
             actor.statusText = ev.summary;
             input.onStatus?.(ev.summary);
             if (shouldRecordFeed) {
-              this.updateEntry(actor, replyEntryId, { statusSummary: ev.summary });
+              this.updateEntry(actor, replyEntryId, {
+                statusSummary: ev.summary,
+              });
             }
-            this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
-          } else if (ev.kind === 'approval_requested') {
+            this.emit({
+              type: "member_runtime",
+              snapshot: this.toSnapshot(actor),
+            });
+          } else if (ev.kind === "approval_requested") {
             const approvalId = randomUUID();
             const approval: PendingApproval = {
               approvalId,
@@ -467,11 +549,14 @@ export class FamilyHub {
               createdAt: new Date().toISOString(),
             };
             this.pendingApprovals.set(approvalId, { approval, actor });
-            actor.state = 'awaiting_approval';
+            actor.state = "awaiting_approval";
             actor.statusText = `举手等待批示：${ev.title}`;
-            this.emit({ type: 'approval_opened', approval });
-            this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
-          } else if (ev.kind === 'turn_done') {
+            this.emit({ type: "approval_opened", approval });
+            this.emit({
+              type: "member_runtime",
+              snapshot: this.toSnapshot(actor),
+            });
+          } else if (ev.kind === "turn_done") {
             finalText = ev.finalText || streamedText;
           }
         }
@@ -489,11 +574,11 @@ export class FamilyHub {
           this.persistFeedsToDisk();
         }
 
-        actor.state = 'idle';
-        actor.statusText = '空闲待命';
+        actor.state = "idle";
+        actor.statusText = "空闲待命";
         actor.lastActiveAt = new Date().toISOString();
         this.clearActorApprovals(actor);
-        this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+        this.emit({ type: "member_runtime", snapshot: this.toSnapshot(actor) });
 
         const phoneCallsDuringTurn = this.callRecords
           .slice(callRecordIndexBefore)
@@ -512,7 +597,7 @@ export class FamilyHub {
           actor.session = null;
           await broken.dispose().catch(() => undefined);
         }
-        actor.state = actor.session?.isAlive() ? 'idle' : 'error';
+        actor.state = actor.session?.isAlive() ? "idle" : "error";
         actor.statusText = `执行异常：${message}`;
         if (shouldRecordFeed) {
           this.updateEntry(actor, replyEntryId, {
@@ -521,10 +606,10 @@ export class FamilyHub {
           });
           this.persistFeedsToDisk();
         }
-        this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+        this.emit({ type: "member_runtime", snapshot: this.toSnapshot(actor) });
         throw err;
       } finally {
-        input.signal?.removeEventListener('abort', forwardAbort);
+        input.signal?.removeEventListener("abort", forwardAbort);
         actor.activeAbort = null;
         actor.currentTurnCallChain = [];
         actor.currentTurnGroupHold = null;
@@ -534,7 +619,7 @@ export class FamilyHub {
     const resultPromise = actor.queueTail.then(run, run);
     actor.queueTail = resultPromise.then(
       () => undefined,
-      () => undefined
+      () => undefined,
     );
     return resultPromise;
   }
@@ -542,40 +627,43 @@ export class FamilyHub {
   public handlePhoneContacts(scopeId: string, callerId: string): string {
     const enabled = this.registry.listEnabled();
     if (enabled.length === 0) {
-      return '当前家庭暂无在岗成员。';
+      return "当前家庭暂无在岗成员。";
     }
     const stateLabels: Readonly<Record<MemberActivityState, string>> = {
-      sleeping: '在岗待命（可随时拨通唤醒）',
-      idle: '在线空闲（可随时拨通）',
-      working: '正在执行任务',
-      in_call: '通话中',
-      awaiting_approval: '等待用户批示',
-      error: '上次异常（拨打将重新唤醒）',
+      sleeping: "在岗待命（可随时拨通唤醒）",
+      idle: "在线空闲（可随时拨通）",
+      working: "正在执行任务",
+      in_call: "通话中",
+      awaiting_approval: "等待用户批示",
+      error: "上次异常（拨打将重新唤醒）",
     };
     const lines = enabled.map((item) => {
       const snap = this.getMemberSnapshot(scopeId, item.id);
-      const selfTag = item.id === callerId ? '（你自己）' : '';
+      const selfTag = item.id === callerId ? "（你自己）" : "";
       return `- ${formatAvatarPrefixForPrompt(item.avatar)}${item.name} (@${item.id})${selfTag} | 身体: ${item.body.kind} | 状态: ${stateLabels[snap.state]} | 专长: ${item.specialty}`;
     });
     const rooms = this.groupEngine?.listRooms(scopeId) ?? [];
     const roomLines =
       rooms.length > 0
         ? [
-            '',
-            '可用家庭群聊：',
-            ...rooms.map((r) => `- ${r.title} (groupId: "${r.id}", 消息数: ${r.messages.length})`),
+            "",
+            "可用家庭群聊：",
+            ...rooms.map(
+              (r) =>
+                `- ${r.title} (groupId: "${r.id}", 消息数: ${r.messages.length})`,
+            ),
           ]
         : [];
-    return ['【智能体家庭通讯录】', ...lines, ...roomLines].join('\n');
+    return ["【智能体家庭通讯录】", ...lines, ...roomLines].join("\n");
   }
 
   public handlePhoneReadDshSession(
     scopeId: string,
     maxItems: number = 25,
-    query?: string
+    query?: string,
   ): string {
     if (!this.contextBridge) {
-      return '当前环境未挂载 DSH 主会话上下文桥接服务。';
+      return "当前环境未挂载 DSH 主会话上下文桥接服务。";
     }
     return this.contextBridge.readRecentTranscript(scopeId, maxItems, query);
   }
@@ -588,7 +676,7 @@ export class FamilyHub {
     readonly message: string;
     readonly signal?: AbortSignal;
   }): Promise<string> {
-    const normalizedTo = params.toMemberId.replace(/^@/u, '').trim();
+    const normalizedTo = params.toMemberId.replace(/^@/u, "").trim();
     const caller = this.registry.get(params.callerId);
     const callee = this.registry.get(normalizedTo);
 
@@ -596,12 +684,16 @@ export class FamilyHub {
       return `拨号失败：未找到在岗家庭成员 "${normalizedTo}"。请先用 phone_contacts 查看有效代号。`;
     }
     if (normalizedTo === params.callerId) {
-      return '无需给自己打电话，请直接继续你手头的工作。';
+      return "无需给自己打电话，请直接继续你手头的工作。";
     }
 
-    const callerActor = this.actors.get(this.actorKey(params.scopeId, params.callerId));
+    const callerActor = this.actors.get(
+      this.actorKey(params.scopeId, params.callerId),
+    );
     const activeChain = callerActor?.currentTurnCallChain ?? [];
-    const callerName = caller ? `${caller.name} (@${caller.id})` : `@${params.callerId}`;
+    const callerName = caller
+      ? `${caller.name} (@${caller.id})`
+      : `@${params.callerId}`;
     const cwd = callerActor?.cwd || process.cwd();
 
     // 1. 占线回环防死锁：目标已经在当前同步呼叫链上游等待
@@ -615,8 +707,8 @@ export class FamilyHub {
         toMemberName: callee.name,
         intent: params.intent,
         message: params.message,
-        status: 'busy_rejected',
-        reply: '占线回环拦截：对方正在电话线上等待你的本次回复。',
+        status: "busy_rejected",
+        reply: "占线回环拦截：对方正在电话线上等待你的本次回复。",
         createdAt: new Date().toISOString(),
         finishedAt: new Date().toISOString(),
       };
@@ -635,7 +727,7 @@ export class FamilyHub {
         toMemberName: callee.name,
         intent: params.intent,
         message: params.message,
-        status: 'hop_limited',
+        status: "hop_limited",
         reply: `连续转拨已达 ${MAX_CALL_HOPS} 跳上限。`,
         createdAt: new Date().toISOString(),
         finishedAt: new Date().toISOString(),
@@ -654,17 +746,17 @@ export class FamilyHub {
       toMemberName: callee.name,
       intent: params.intent,
       message: params.message,
-      status: 'ringing',
+      status: "ringing",
       createdAt: new Date().toISOString(),
     };
     this.recordCall(ringingRecord);
 
     const intentLabel =
-      params.intent === 'request_help'
-        ? '请求协助'
-        : params.intent === 'sync'
-          ? '同步进展'
-          : '探讨方案';
+      params.intent === "request_help"
+        ? "请求协助"
+        : params.intent === "sync"
+          ? "同步进展"
+          : "探讨方案";
 
     const framedIncoming = [
       `📞 【家庭手机来电 · ${intentLabel}】`,
@@ -673,14 +765,14 @@ export class FamilyHub {
       params.message,
       ``,
       `（提示：${callerName} 正拿着电话等你回复。请结合你的灵魂准则与专业判断独立回应——赞同则直接分析或动手协助；若认为不合理或越界，请明确拒绝并说明理由与替代建议，无需反向拨打给 ${callerName}。）`,
-    ].join('\n');
+    ].join("\n");
 
     try {
       const nextChain = [...activeChain, params.callerId];
       const outcome = await this.sendMemberMessage({
         scopeId: params.scopeId,
         memberId: callee.id,
-        senderRole: 'peer',
+        senderRole: "peer",
         senderName: `${caller?.name ?? params.callerId} 来电 (${intentLabel})`,
         message: framedIncoming,
         displayMessage: params.message,
@@ -690,7 +782,7 @@ export class FamilyHub {
       });
 
       this.updateCall(callId, {
-        status: 'completed',
+        status: "completed",
         reply: outcome.finalText,
         finishedAt: new Date().toISOString(),
       });
@@ -699,7 +791,7 @@ export class FamilyHub {
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       this.updateCall(callId, {
-        status: 'failed',
+        status: "failed",
         reply: errMsg,
         finishedAt: new Date().toISOString(),
       });
@@ -716,13 +808,18 @@ export class FamilyHub {
     readonly message: string;
   }): Promise<string> {
     if (!this.groupEngine) {
-      return '当前家庭群聊引擎尚未挂载，请改用 phone_call 一对一联系。';
+      return "当前家庭群聊引擎尚未挂载，请改用 phone_call 一对一联系。";
     }
     const caller = this.registry.get(params.callerId);
-    const callerActor = this.actors.get(this.actorKey(params.scopeId, params.callerId));
+    const callerActor = this.actors.get(
+      this.actorKey(params.scopeId, params.callerId),
+    );
     const cwd = callerActor?.cwd || process.cwd();
 
-    if (callerActor?.currentTurnGroupHold && (!params.groupId || params.groupId === callerActor.currentTurnGroupHold)) {
+    if (
+      callerActor?.currentTurnGroupHold &&
+      (!params.groupId || params.groupId === callerActor.currentTurnGroupHold)
+    ) {
       return `你当前正拿着群聊「${callerActor.currentTurnGroupHold}」的话筒发言，无需再调 phone_group_discuss，请直接把你想在群里说的话写在本次回复正文里即可！`;
     }
 
@@ -731,25 +828,31 @@ export class FamilyHub {
       return `跨成员协作转接已达 ${MAX_CALL_HOPS} 跳上限，请先完成当前轮次回复。`;
     }
 
-    let targetGroupId = params.groupId?.trim() || '';
+    let targetGroupId = params.groupId?.trim() || "";
     if (!targetGroupId) {
       if (params.participants && params.participants.length > 0) {
         const uniqueMembers = Array.from(
-          new Set([params.callerId, ...params.participants.map((p) => p.replace(/^@/u, '').trim())])
+          new Set([
+            params.callerId,
+            ...params.participants.map((p) => p.replace(/^@/u, "").trim()),
+          ]),
         );
         const created = this.groupEngine.createRoom({
           scopeId: params.scopeId,
-          title: params.title?.trim() || `${caller?.name ?? params.callerId} 发起的讨论组`,
+          title:
+            params.title?.trim() ||
+            `${caller?.name ?? params.callerId} 发起的讨论组`,
           memberIds: uniqueMembers,
         });
         targetGroupId = created.id;
       } else {
-        targetGroupId = 'family-main';
+        targetGroupId = "family-main";
       }
     }
 
     const beforeCount = this.groupEngine.getOrCreateMainRoom(params.scopeId);
-    const existingRoom = this.groupEngine.getRoom(params.scopeId, targetGroupId) ?? beforeCount;
+    const existingRoom =
+      this.groupEngine.getRoom(params.scopeId, targetGroupId) ?? beforeCount;
     const startIdx = existingRoom.messages.length;
 
     const updatedRoom = await this.groupEngine.postMessage({
@@ -757,7 +860,7 @@ export class FamilyHub {
       groupId: existingRoom.id,
       senderId: params.callerId,
       senderName: caller?.name ?? params.callerId,
-      senderAvatar: caller?.avatar ?? '🤖',
+      senderAvatar: caller?.avatar ?? "🤖",
       content: params.message,
       cwd,
       blockedMemberIds: [...activeChain, params.callerId],
@@ -772,9 +875,9 @@ export class FamilyHub {
       `【群聊「${updatedRoom.title}」本轮讨论纪要】`,
       ...newMessages.map(
         (m) =>
-          `- ${formatAvatarPrefixForPrompt(m.senderAvatar)}${m.senderName} (@${m.senderId}): ${m.content}`
+          `- ${formatAvatarPrefixForPrompt(m.senderAvatar)}${m.senderName} (@${m.senderId}): ${m.content}`,
       ),
-    ].join('\n');
+    ].join("\n");
   }
 
   public async dispose(): Promise<void> {
@@ -792,19 +895,24 @@ export class FamilyHub {
     await Promise.all(disposals);
   }
 
-  private async reconcileActorsWithRoster(members: readonly FamilyMember[]): Promise<void> {
+  private async reconcileActorsWithRoster(
+    members: readonly FamilyMember[],
+  ): Promise<void> {
     const byId = new Map(members.map((m) => [m.id, m]));
     for (const actor of this.actors.values()) {
       if (!actor.session) continue;
       const latest = byId.get(actor.memberId);
       if (!latest || !latest.enabled) {
-        if (actor.state === 'idle' || actor.state === 'sleeping') {
+        if (actor.state === "idle" || actor.state === "sleeping") {
           const old = actor.session;
           actor.session = null;
           actor.awakenedBody = undefined;
-          actor.state = 'sleeping';
+          actor.state = "sleeping";
           await old.dispose().catch(() => undefined);
-          this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+          this.emit({
+            type: "member_runtime",
+            snapshot: this.toSnapshot(actor),
+          });
         } else {
           actor.needsReawaken = true;
         }
@@ -813,14 +921,17 @@ export class FamilyHub {
 
       if (!actor.awakenedBody) continue;
       if (requiresProcessRestart(actor.awakenedBody, latest.body)) {
-        if (actor.state === 'idle') {
+        if (actor.state === "idle") {
           const old = actor.session;
           actor.session = null;
           actor.awakenedBody = undefined;
-          actor.state = 'sleeping';
-          actor.statusText = '身体配置已更新，下次对话将唤醒新身体';
+          actor.state = "sleeping";
+          actor.statusText = "身体配置已更新，下次对话将唤醒新身体";
           await old.dispose().catch(() => undefined);
-          this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+          this.emit({
+            type: "member_runtime",
+            snapshot: this.toSnapshot(actor),
+          });
         } else {
           actor.needsReawaken = true;
         }
@@ -828,23 +939,33 @@ export class FamilyHub {
       }
 
       if (hasModelOrEffortDiff(actor.awakenedBody, latest.body)) {
-        const applied = (await actor.session.reconfigure?.(latest.body).catch(() => false)) ?? false;
+        const applied =
+          (await actor.session.reconfigure?.(latest.body).catch(() => false)) ??
+          false;
         if (applied) {
           actor.awakenedBody = latest.body;
-          if (actor.state === 'idle') {
-            const label = latest.body.model || '默认模型';
-            const effortLabel = latest.body.reasoningEffort ? ` · ${latest.body.reasoningEffort}` : '';
+          if (actor.state === "idle") {
+            const label = latest.body.model || "默认模型";
+            const effortLabel = latest.body.reasoningEffort
+              ? ` · ${latest.body.reasoningEffort}`
+              : "";
             actor.statusText = `已切换至 ${label}${effortLabel}`;
-            this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+            this.emit({
+              type: "member_runtime",
+              snapshot: this.toSnapshot(actor),
+            });
           }
-        } else if (actor.state === 'idle') {
+        } else if (actor.state === "idle") {
           const old = actor.session;
           actor.session = null;
           actor.awakenedBody = undefined;
-          actor.state = 'sleeping';
-          actor.statusText = '模型/速度已切换，下次发言立即生效';
+          actor.state = "sleeping";
+          actor.statusText = "模型/速度已切换，下次发言立即生效";
           await old.dispose().catch(() => undefined);
-          this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+          this.emit({
+            type: "member_runtime",
+            snapshot: this.toSnapshot(actor),
+          });
         } else {
           actor.needsReawaken = true;
         }
@@ -852,7 +973,10 @@ export class FamilyHub {
     }
   }
 
-  private async buildPhoneMcpSpec(scopeId: string, callerId: string): Promise<PhoneMcpLaunchSpec> {
+  private async buildPhoneMcpSpec(
+    scopeId: string,
+    callerId: string,
+  ): Promise<PhoneMcpLaunchSpec> {
     if (this.phoneBus) {
       await this.phoneBus.start();
       return this.phoneBus.buildLaunchSpec(scopeId, callerId);
@@ -864,17 +988,21 @@ export class FamilyHub {
       args: [fallbackScript],
       env: {
         ...nodeExec.env,
-        NO_PROXY: '127.0.0.1,localhost,::1',
-        no_proxy: '127.0.0.1,localhost,::1',
+        NO_PROXY: "127.0.0.1,localhost,::1",
+        no_proxy: "127.0.0.1,localhost,::1",
         DSH_FAMILY_SCOPE_ID: scopeId,
         DSH_FAMILY_CALLER_ID: callerId,
       },
-      httpUrl: 'http://127.0.0.1:0/mcp',
-      bearerToken: '',
+      httpUrl: "http://127.0.0.1:0/mcp",
+      bearerToken: "",
     };
   }
 
-  private ensureActor(scopeId: string, memberId: string, cwd: string): MemberActor {
+  private ensureActor(
+    scopeId: string,
+    memberId: string,
+    cwd: string,
+  ): MemberActor {
     const key = this.actorKey(scopeId, memberId);
     const existing = this.actors.get(key);
     if (existing) return existing;
@@ -883,7 +1011,7 @@ export class FamilyHub {
       memberId,
       session: null,
       cwd,
-      state: 'sleeping',
+      state: "sleeping",
       entries: [],
       lastHumanReadCount: 0,
       queueTail: Promise.resolve(),
@@ -904,17 +1032,22 @@ export class FamilyHub {
     const overflow = Math.max(0, actor.entries.length + 1 - 80);
     actor.entries = [...actor.entries.slice(-79), entry];
     if (overflow > 0) {
-      actor.lastHumanReadCount = Math.max(0, actor.lastHumanReadCount - overflow);
+      actor.lastHumanReadCount = Math.max(
+        0,
+        actor.lastHumanReadCount - overflow,
+      );
     }
   }
 
   private updateEntry(
     actor: MemberActor,
     entryId: string,
-    patch: Partial<Pick<MemberChatEntry, 'content' | 'statusSummary' | 'streaming'>>
+    patch: Partial<
+      Pick<MemberChatEntry, "content" | "statusSummary" | "streaming">
+    >,
   ): void {
     actor.entries = actor.entries.map((item) =>
-      item.id === entryId ? { ...item, ...patch } : item
+      item.id === entryId ? { ...item, ...patch } : item,
     );
   }
 
@@ -922,7 +1055,7 @@ export class FamilyHub {
     for (const [id, entry] of this.pendingApprovals) {
       if (entry.actor === actor) {
         this.pendingApprovals.delete(id);
-        this.emit({ type: 'approval_closed', approvalId: id });
+        this.emit({ type: "approval_closed", approvalId: id });
       }
     }
   }
@@ -933,12 +1066,12 @@ export class FamilyHub {
       this.callRecords.shift();
     }
     this.persistCallsToDisk();
-    this.emit({ type: 'phone_call_updated', record });
+    this.emit({ type: "phone_call_updated", record });
   }
 
   private updateCall(
     id: string,
-    patch: Partial<Pick<PhoneCallRecord, 'status' | 'reply' | 'finishedAt'>>
+    patch: Partial<Pick<PhoneCallRecord, "status" | "reply" | "finishedAt">>,
   ): void {
     const idx = this.callRecords.findIndex((item) => item.id === id);
     if (idx === -1) return;
@@ -948,15 +1081,18 @@ export class FamilyHub {
     };
     this.callRecords[idx] = updated;
     this.persistCallsToDisk();
-    this.emit({ type: 'phone_call_updated', record: updated });
+    this.emit({ type: "phone_call_updated", record: updated });
   }
 
   private toSnapshot(actor: MemberActor): MemberRuntimeSnapshot {
-    const start = Math.max(0, Math.min(actor.lastHumanReadCount, actor.entries.length));
+    const start = Math.max(
+      0,
+      Math.min(actor.lastHumanReadCount, actor.entries.length),
+    );
     let unreadCount = 0;
     for (let i = start; i < actor.entries.length; i += 1) {
       const item = actor.entries[i];
-      if (item && item.role !== 'human' && !item.streaming) {
+      if (item && item.role !== "human" && !item.streaming) {
         unreadCount += 1;
       }
     }
@@ -977,7 +1113,7 @@ export class FamilyHub {
     if (!this.storageDir) return;
     try {
       mkdirSync(this.storageDir, { recursive: true });
-      const filePath = join(this.storageDir, 'member-feeds.json');
+      const filePath = join(this.storageDir, "member-feeds.json");
       const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
       const records: Array<{
         scopeId: string;
@@ -994,11 +1130,18 @@ export class FamilyHub {
             scopeId: actor.scopeId,
             memberId: actor.memberId,
             entries: cleanEntries,
-            lastHumanReadCount: Math.min(cleanEntries.length, actor.lastHumanReadCount),
+            lastHumanReadCount: Math.min(
+              cleanEntries.length,
+              actor.lastHumanReadCount,
+            ),
           });
         }
       }
-      writeFileSync(tmpPath, `${JSON.stringify({ version: 1, feeds: records }, null, 2)}\n`, 'utf8');
+      writeFileSync(
+        tmpPath,
+        `${JSON.stringify({ version: 1, feeds: records }, null, 2)}\n`,
+        "utf8",
+      );
       renameSync(tmpPath, filePath);
     } catch {
       // 忽略 UI 面板展示历史落盘异常，不影响核心流程
@@ -1007,29 +1150,42 @@ export class FamilyHub {
 
   private restoreFeedsFromDisk(): void {
     if (!this.storageDir) return;
-    const filePath = join(this.storageDir, 'member-feeds.json');
+    const filePath = join(this.storageDir, "member-feeds.json");
     if (!existsSync(filePath)) return;
     try {
-      const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+      const parsed = JSON.parse(readFileSync(filePath, "utf8")) as Record<
+        string,
+        unknown
+      >;
       const feeds = Array.isArray(parsed.feeds) ? parsed.feeds : [];
       for (const raw of feeds) {
-        if (!raw || typeof raw !== 'object') continue;
+        if (!raw || typeof raw !== "object") continue;
         const rec = raw as Record<string, unknown>;
         if (
-          typeof rec.scopeId !== 'string' ||
-          typeof rec.memberId !== 'string' ||
+          typeof rec.scopeId !== "string" ||
+          typeof rec.memberId !== "string" ||
           !Array.isArray(rec.entries)
         ) {
           continue;
         }
-        const actor = this.ensureActor(rec.scopeId, rec.memberId, process.cwd());
-        actor.entries = rec.entries.filter(
-          (item): item is MemberChatEntry =>
-            Boolean(item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string')
+        const actor = this.ensureActor(
+          rec.scopeId,
+          rec.memberId,
+          process.cwd(),
+        );
+        actor.entries = rec.entries.filter((item): item is MemberChatEntry =>
+          Boolean(
+            item &&
+            typeof item === "object" &&
+            typeof (item as Record<string, unknown>).id === "string",
+          ),
         );
         actor.lastHumanReadCount =
-          typeof rec.lastHumanReadCount === 'number'
-            ? Math.max(0, Math.min(actor.entries.length, rec.lastHumanReadCount))
+          typeof rec.lastHumanReadCount === "number"
+            ? Math.max(
+                0,
+                Math.min(actor.entries.length, rec.lastHumanReadCount),
+              )
             : actor.entries.length;
       }
     } catch {
@@ -1041,10 +1197,14 @@ export class FamilyHub {
     if (!this.storageDir) return;
     try {
       mkdirSync(this.storageDir, { recursive: true });
-      const filePath = join(this.storageDir, 'phone-calls.json');
+      const filePath = join(this.storageDir, "phone-calls.json");
       const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
       const records = this.callRecords.slice(-120);
-      writeFileSync(tmpPath, `${JSON.stringify({ version: 1, calls: records }, null, 2)}\n`, 'utf8');
+      writeFileSync(
+        tmpPath,
+        `${JSON.stringify({ version: 1, calls: records }, null, 2)}\n`,
+        "utf8",
+      );
       renameSync(tmpPath, filePath);
     } catch {
       // ignore
@@ -1053,21 +1213,25 @@ export class FamilyHub {
 
   private restoreCallsFromDisk(): void {
     if (!this.storageDir) return;
-    const filePath = join(this.storageDir, 'phone-calls.json');
+    const filePath = join(this.storageDir, "phone-calls.json");
     if (!existsSync(filePath)) return;
     try {
-      const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+      const parsed = JSON.parse(readFileSync(filePath, "utf8")) as Record<
+        string,
+        unknown
+      >;
       const calls = Array.isArray(parsed.calls) ? parsed.calls : [];
       for (const raw of calls) {
-        if (!raw || typeof raw !== 'object') continue;
+        if (!raw || typeof raw !== "object") continue;
         const item = raw as Record<string, unknown>;
-        if (typeof item.id !== 'string' || typeof item.scopeId !== 'string') continue;
+        if (typeof item.id !== "string" || typeof item.scopeId !== "string")
+          continue;
         const normalized: PhoneCallRecord =
-          item.status === 'ringing'
+          item.status === "ringing"
             ? ({
                 ...(item as unknown as PhoneCallRecord),
-                status: 'failed',
-                reply: '宿主重启时通话已结束',
+                status: "failed",
+                reply: "宿主重启时通话已结束",
                 finishedAt: new Date().toISOString(),
               } satisfies PhoneCallRecord)
             : (item as unknown as PhoneCallRecord);

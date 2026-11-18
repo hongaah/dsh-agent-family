@@ -18,23 +18,27 @@ import {
   Trash2,
   UserPlus,
   Users,
-} from 'lucide-react';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+} from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
-import type { FamilyFocusTarget, FamilyGroupRoom, FamilyMember } from '../core/types.ts';
-import { ApprovalBanner } from './ApprovalBanner.tsx';
-import { familyClientApi, useFamilyLiveState } from './api.ts';
-import { CommandPalette } from './CommandPalette.tsx';
-import { MemberAvatar } from './MemberAvatar.tsx';
-import { MemberSheet } from './MemberSheet.tsx';
+import type {
+  FamilyFocusTarget,
+  FamilyGroupRoom,
+  FamilyMember,
+} from "../core/types.ts";
+import { ApprovalBanner } from "./ApprovalBanner.tsx";
+import { familyClientApi, useFamilyLiveState } from "./api.ts";
+import { CommandPalette } from "./CommandPalette.tsx";
+import { MemberAvatar } from "./MemberAvatar.tsx";
+import { MemberSheet } from "./MemberSheet.tsx";
 import {
   formatShortModelBadge,
   GroupMembersModelPopover,
   MemberModelQuickPopover,
   MemberPermissionQuickPopover,
-} from './ModelQuickPopover.tsx';
-import { RichMessageContent } from './RichMessageContent.tsx';
-import { SmartComposer } from './SmartComposer.tsx';
+} from "./ModelQuickPopover.tsx";
+import { RichMessageContent } from "./RichMessageContent.tsx";
+import { SmartComposer } from "./SmartComposer.tsx";
 
 export interface SessionSummaryOption {
   readonly id: string;
@@ -51,27 +55,34 @@ export interface FamilyNavigationOrder {
 export interface FamilyWorkbenchProps {
   readonly sessions: readonly SessionSummaryOption[];
   readonly onBackToConversation: () => void;
-  readonly mode?: 'fullscreen' | 'split';
+  readonly mode?: "fullscreen" | "split";
   readonly lockedScopeId?: string;
   readonly isVisible?: boolean;
   readonly navigationOrder?: FamilyNavigationOrder | null;
-  readonly onExpandFullscreen?: (scopeId: string, currentTarget: FamilyFocusTarget) => void;
+  readonly onExpandFullscreen?: (
+    scopeId: string,
+    currentTarget: FamilyFocusTarget,
+  ) => void;
 }
 
 type LoungeTarget = FamilyFocusTarget;
 
-type InspectorTab = 'calls' | 'context';
+type InspectorTab = "calls" | "context";
 
 const STATE_LABELS: Readonly<Record<string, string>> = {
-  sleeping: '待唤醒',
-  idle: '空闲',
-  working: '执行中',
-  in_call: '通话中',
-  awaiting_approval: '待批示',
-  error: '异常',
+  sleeping: "待唤醒",
+  idle: "空闲",
+  working: "执行中",
+  in_call: "通话中",
+  awaiting_approval: "待批示",
+  error: "异常",
 };
 
-function CopyMessageButton({ text }: { readonly text: string }): React.ReactElement {
+function CopyMessageButton({
+  text,
+}: {
+  readonly text: string;
+}): React.ReactElement {
   const [copied, setCopied] = useState<boolean>(false);
   return (
     <button
@@ -106,7 +117,7 @@ function HandoffPopoverButton({
   if (candidates.length === 0) return null;
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div style={{ position: "relative" }}>
       <button
         type="button"
         className="sh-btn sh-btn-ghost sh-btn-icon"
@@ -119,19 +130,26 @@ function HandoffPopoverButton({
       {open && (
         <div
           style={{
-            position: 'absolute',
+            position: "absolute",
             right: 0,
-            top: 'calc(100% + 4px)',
+            top: "calc(100% + 4px)",
             width: 190,
             padding: 4,
             borderRadius: 8,
-            border: '1px solid var(--sh-border)',
-            background: 'var(--sh-popover)',
-            boxShadow: 'var(--sh-shadow-lg)',
+            border: "1px solid var(--sh-border)",
+            background: "var(--sh-popover)",
+            boxShadow: "var(--sh-shadow-lg)",
             zIndex: 35,
           }}
         >
-          <div style={{ padding: '4px 8px', fontSize: 10.5, color: 'var(--sh-muted-fg)', fontWeight: 600 }}>
+          <div
+            style={{
+              padding: "4px 8px",
+              fontSize: 10.5,
+              color: "var(--sh-muted-fg)",
+              fontWeight: 600,
+            }}
+          >
             转交给谁评审 / 接力？
           </div>
           {candidates.map((m) => (
@@ -139,17 +157,25 @@ function HandoffPopoverButton({
               key={m.id}
               type="button"
               className="sh-menu-item"
-              style={{ padding: '5px 8px', fontSize: 12 }}
+              style={{ padding: "5px 8px", fontSize: 12 }}
               onClick={() => {
                 setOpen(false);
-                const snippet = content.length > 1200 ? `${content.slice(0, 1200)}…` : content;
+                const snippet =
+                  content.length > 1200
+                    ? `${content.slice(0, 1200)}…`
+                    : content;
                 onHandoff(
                   m.id,
-                  `以下是「${sourceAuthor}」刚才产出的结论/方案，请站在你的专业角度进行评审、补充或直接接力落地：\n\n---\n${snippet}\n---`
+                  `以下是「${sourceAuthor}」刚才产出的结论/方案，请站在你的专业角度进行评审、补充或直接接力落地：\n\n---\n${snippet}\n---`,
                 );
               }}
             >
-              <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} alt={m.name} size={18} />
+              <MemberAvatar
+                avatar={m.avatar}
+                bodyKind={m.body.kind}
+                alt={m.name}
+                size={18}
+              />
               <span>{m.name}</span>
             </button>
           ))}
@@ -162,28 +188,31 @@ function HandoffPopoverButton({
 export function FamilyWorkbench({
   sessions,
   onBackToConversation,
-  mode = 'fullscreen',
+  mode = "fullscreen",
   lockedScopeId,
   isVisible = true,
   navigationOrder,
   onExpandFullscreen,
 }: FamilyWorkbenchProps): React.ReactElement {
-  const isSplitMode = mode === 'split';
+  const isSplitMode = mode === "split";
   const [internalScopeId, setInternalScopeId] = useState<string>(
-    () => lockedScopeId ?? navigationOrder?.scopeId ?? sessions[0]?.id ?? 'default'
+    () =>
+      lockedScopeId ?? navigationOrder?.scopeId ?? sessions[0]?.id ?? "default",
   );
   const selectedScopeId = lockedScopeId ?? internalScopeId;
   const { state, refresh } = useFamilyLiveState(selectedScopeId);
 
   const [target, setTarget] = useState<LoungeTarget>(
-    () => navigationOrder?.target ?? { kind: 'group', groupId: 'family-main' }
+    () => navigationOrder?.target ?? { kind: "group", groupId: "family-main" },
   );
   const [sendFresh, setSendFresh] = useState<boolean>(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
-  const [inspectorOpen, setInspectorOpen] = useState<boolean>(() =>
-    !isSplitMode && (typeof window !== 'undefined' ? window.innerWidth >= 1120 : true)
+  const [inspectorOpen, setInspectorOpen] = useState<boolean>(
+    () =>
+      !isSplitMode &&
+      (typeof window !== "undefined" ? window.innerWidth >= 1120 : true),
   );
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('calls');
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("calls");
 
   // Slide-over Sheet 与 Cmd+K 指挥面板状态
   const [sheetOpen, setSheetOpen] = useState<boolean>(false);
@@ -192,9 +221,12 @@ export function FamilyWorkbench({
 
   // 新建专题群浮层状态
   const [creatingGroup, setCreatingGroup] = useState<boolean>(false);
-  const [newGroupTitle, setNewGroupTitle] = useState<string>('');
+  const [newGroupTitle, setNewGroupTitle] = useState<string>("");
   const [newGroupMembers, setNewGroupMembers] = useState<string[]>([]);
-  const [composerInsert, setComposerInsert] = useState<{ seq: number; text: string } | null>(null);
+  const [composerInsert, setComposerInsert] = useState<{
+    seq: number;
+    text: string;
+  } | null>(null);
 
   // 智能贴底滚动状态
   const streamRef = useRef<HTMLDivElement | null>(null);
@@ -203,13 +235,19 @@ export function FamilyWorkbench({
   const handledNavSeqRef = useRef<number>(0);
 
   useEffect(() => {
-    if (!lockedScopeId && internalScopeId === 'default' && sessions.length > 0 && sessions[0]?.id) {
+    if (
+      !lockedScopeId &&
+      internalScopeId === "default" &&
+      sessions.length > 0 &&
+      sessions[0]?.id
+    ) {
       setInternalScopeId(sessions[0].id);
     }
   }, [sessions, internalScopeId, lockedScopeId]);
 
   useEffect(() => {
-    if (!navigationOrder || navigationOrder.seq === handledNavSeqRef.current) return;
+    if (!navigationOrder || navigationOrder.seq === handledNavSeqRef.current)
+      return;
     handledNavSeqRef.current = navigationOrder.seq;
     if (!lockedScopeId && navigationOrder.scopeId) {
       setInternalScopeId(navigationOrder.scopeId);
@@ -220,28 +258,28 @@ export function FamilyWorkbench({
   // 全局 Cmd/Ctrl + K 快捷键唤起指挥面板
   useEffect(() => {
     const onGlobalKey = (ev: KeyboardEvent) => {
-      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "k") {
         ev.preventDefault();
         setPaletteOpen((v) => !v);
       }
     };
-    window.addEventListener('keydown', onGlobalKey);
-    return () => window.removeEventListener('keydown', onGlobalKey);
+    window.addEventListener("keydown", onGlobalKey);
+    return () => window.removeEventListener("keydown", onGlobalKey);
   }, []);
 
   const currentSessionMeta = useMemo(
     () => sessions.find((s) => s.id === selectedScopeId),
-    [sessions, selectedScopeId]
+    [sessions, selectedScopeId],
   );
 
   const enabledMembers = useMemo(
     () => state.members.filter((m) => m.enabled),
-    [state.members]
+    [state.members],
   );
 
   const validMemberIdSet = useMemo(
     () => new Set(state.members.map((m) => m.id)),
-    [state.members]
+    [state.members],
   );
 
   const snapshotByMember = useMemo(() => {
@@ -259,10 +297,10 @@ export function FamilyWorkbench({
     if (found.length > 0) return found;
     return [
       {
-        id: 'family-main',
-        title: '家庭总群',
+        id: "family-main",
+        title: "家庭总群",
         scopeId: selectedScopeId,
-        memberIds: 'all_enabled' as const,
+        memberIds: "all_enabled" as const,
         messages: [],
         readCursors: {},
         unreadCount: 0,
@@ -275,16 +313,16 @@ export function FamilyWorkbench({
 
   const scopedCallRecords = useMemo(
     () => state.callRecords.filter((c) => c.scopeId === selectedScopeId),
-    [state.callRecords, selectedScopeId]
+    [state.callRecords, selectedScopeId],
   );
 
   const activeGroupRoom = useMemo(() => {
-    if (target.kind !== 'group') return undefined;
+    if (target.kind !== "group") return undefined;
     return scopedRooms.find((r) => r.id === target.groupId) ?? scopedRooms[0];
   }, [scopedRooms, target]);
 
   const activeMember = useMemo(() => {
-    if (target.kind !== 'member') return undefined;
+    if (target.kind !== "member") return undefined;
     return state.members.find((m) => m.id === target.memberId);
   }, [state.members, target]);
 
@@ -299,11 +337,15 @@ export function FamilyWorkbench({
 
   useEffect(() => {
     if (!isVisible) return;
-    if (target.kind === 'group' && activeGroupRoom && activeGroupUnread > 0) {
+    if (target.kind === "group" && activeGroupRoom && activeGroupUnread > 0) {
       void familyClientApi
         .markRead({ scopeId: selectedScopeId, groupId: activeGroupRoom.id })
         .catch(() => undefined);
-    } else if (target.kind === 'member' && activeMember && activeMemberUnread > 0) {
+    } else if (
+      target.kind === "member" &&
+      activeMember &&
+      activeMemberUnread > 0
+    ) {
       void familyClientApi
         .markRead({ scopeId: selectedScopeId, memberId: activeMember.id })
         .catch(() => undefined);
@@ -320,7 +362,7 @@ export function FamilyWorkbench({
 
   // 监听消息变化自动平滑贴底（仅当用户未手动上翻历史时）
   const streamSignature =
-    target.kind === 'group'
+    target.kind === "group"
       ? `${activeGroupRoom?.messages.length ?? 0}:${activeGroupRoom?.streamingDraft?.content.length ?? 0}`
       : `${activeMemberSnapshot?.entries.length ?? 0}:${activeMemberSnapshot?.entries.at(-1)?.content.length ?? 0}`;
 
@@ -339,7 +381,7 @@ export function FamilyWorkbench({
     if (!el) return;
     stickToBottomRef.current = true;
     setShowJumpBottom(false);
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   };
 
   const openCreateSheet = () => {
@@ -352,13 +394,16 @@ export function FamilyWorkbench({
     setSheetOpen(true);
   };
 
-  const dispatchMessageNonBlocking = (messageText: string, overrideTarget?: LoungeTarget) => {
+  const dispatchMessageNonBlocking = (
+    messageText: string,
+    overrideTarget?: LoungeTarget,
+  ) => {
     const effectiveTarget = overrideTarget ?? target;
     setErrorBanner(null);
     stickToBottomRef.current = true;
     setShowJumpBottom(false);
 
-    if (effectiveTarget.kind === 'group') {
+    if (effectiveTarget.kind === "group") {
       void familyClientApi
         .postGroupMessage({
           scopeId: selectedScopeId,
@@ -387,8 +432,14 @@ export function FamilyWorkbench({
       });
   };
 
-  const handleHandoffToMember = (targetMemberId: string, framedPrompt: string) => {
-    const nextTarget: LoungeTarget = { kind: 'member', memberId: targetMemberId };
+  const handleHandoffToMember = (
+    targetMemberId: string,
+    framedPrompt: string,
+  ) => {
+    const nextTarget: LoungeTarget = {
+      kind: "member",
+      memberId: targetMemberId,
+    };
     setTarget(nextTarget);
     dispatchMessageNonBlocking(framedPrompt, nextTarget);
   };
@@ -396,12 +447,12 @@ export function FamilyWorkbench({
   const handleClearCurrentHistory = async () => {
     setErrorBanner(null);
     try {
-      if (target.kind === 'group' && activeGroupRoom) {
+      if (target.kind === "group" && activeGroupRoom) {
         await familyClientApi.clearHistory({
           scopeId: selectedScopeId,
           groupId: activeGroupRoom.id,
         });
-      } else if (target.kind === 'member' && activeMember) {
+      } else if (target.kind === "member" && activeMember) {
         await familyClientApi.clearHistory({
           scopeId: selectedScopeId,
           memberId: activeMember.id,
@@ -433,25 +484,25 @@ export function FamilyWorkbench({
         memberIds: newGroupMembers,
       });
       setCreatingGroup(false);
-      setNewGroupTitle('');
+      setNewGroupTitle("");
       setNewGroupMembers([]);
       await refresh();
-      setTarget({ kind: 'group', groupId: res.room.id });
+      setTarget({ kind: "group", groupId: res.room.id });
     } catch (err) {
       setErrorBanner(err instanceof Error ? err.message : String(err));
     }
   };
 
   const isCurrentStageBusy =
-    target.kind === 'group'
+    target.kind === "group"
       ? Boolean(activeGroupRoom?.running)
-      : activeMemberSnapshot?.state === 'working' ||
-        activeMemberSnapshot?.state === 'in_call' ||
-        activeMemberSnapshot?.state === 'awaiting_approval';
+      : activeMemberSnapshot?.state === "working" ||
+        activeMemberSnapshot?.state === "in_call" ||
+        activeMemberSnapshot?.state === "awaiting_approval";
 
   const groupParticipantMembers = useMemo(() => {
     if (!activeGroupRoom) return enabledMembers;
-    if (activeGroupRoom.memberIds === 'all_enabled') return enabledMembers;
+    if (activeGroupRoom.memberIds === "all_enabled") return enabledMembers;
     const set = new Set(activeGroupRoom.memberIds);
     return enabledMembers.filter((m) => set.has(m.id));
   }, [activeGroupRoom, enabledMembers]);
@@ -459,16 +510,32 @@ export function FamilyWorkbench({
   return (
     <div className="dshfam-root">
       {/* 顶栏 Toolbar (兼容右侧同屏分栏紧凑形态与三栏全屏工作台形态) */}
-      <header className="dshfam-header" style={isSplitMode ? { height: 44, padding: '0 10px' } : undefined}>
+      <header
+        className="dshfam-header"
+        style={isSplitMode ? { height: 44, padding: "0 10px" } : undefined}
+      >
         <div className="dshfam-header-left">
           <MemberAvatar avatar="lobe:deepseek" size={isSplitMode ? 22 : 28} />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-            <span style={{ fontWeight: 600, fontSize: isSplitMode ? 13 : 14, whiteSpace: 'nowrap' }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              minWidth: 0,
+            }}
+          >
+            <span
+              style={{
+                fontWeight: 600,
+                fontSize: isSplitMode ? 13 : 14,
+                whiteSpace: "nowrap",
+              }}
+            >
               智能体家庭
             </span>
             {!isSplitMode && (
               <>
-                <span style={{ color: 'var(--sh-muted-fg)' }}>/</span>
+                <span style={{ color: "var(--sh-muted-fg)" }}>/</span>
                 {sessions.length > 0 ? (
                   <select
                     aria-label="关联工作区会话"
@@ -484,7 +551,9 @@ export function FamilyWorkbench({
                     ))}
                   </select>
                 ) : (
-                  <span style={{ fontSize: 12, color: 'var(--sh-muted-fg)' }}>默认工作区</span>
+                  <span style={{ fontSize: 12, color: "var(--sh-muted-fg)" }}>
+                    默认工作区
+                  </span>
                 )}
               </>
             )}
@@ -496,10 +565,22 @@ export function FamilyWorkbench({
             <button
               type="button"
               className="sh-btn sh-btn-outline"
-              style={{ height: 30, padding: '0 10px', color: 'var(--sh-muted-fg)', gap: 10 }}
+              style={{
+                height: 30,
+                padding: "0 10px",
+                color: "var(--sh-muted-fg)",
+                gap: 10,
+              }}
               onClick={() => setPaletteOpen(true)}
             >
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  fontSize: 12,
+                }}
+              >
                 <Search size={13} />
                 <span>跳转或执行命令…</span>
               </span>
@@ -509,7 +590,11 @@ export function FamilyWorkbench({
 
           <button
             type="button"
-            className={isSplitMode ? 'sh-btn sh-btn-outline sh-btn-sm' : 'sh-btn sh-btn-primary'}
+            className={
+              isSplitMode
+                ? "sh-btn sh-btn-outline sh-btn-sm"
+                : "sh-btn sh-btn-primary"
+            }
             style={{ height: isSplitMode ? 27 : 30 }}
             onClick={openCreateSheet}
             title="创造新家庭成员"
@@ -520,7 +605,7 @@ export function FamilyWorkbench({
 
           <button
             type="button"
-            className={`sh-btn sh-btn-icon ${inspectorOpen ? 'sh-btn-secondary' : 'sh-btn-ghost'}`}
+            className={`sh-btn sh-btn-icon ${inspectorOpen ? "sh-btn-secondary" : "sh-btn-ghost"}`}
             style={isSplitMode ? { width: 27, height: 27 } : undefined}
             title="展开/收起通话记录与灵魂档案"
             aria-label="切换右侧栏"
@@ -534,7 +619,7 @@ export function FamilyWorkbench({
               <button
                 type="button"
                 className="sh-btn sh-btn-ghost sh-btn-sm"
-                style={{ height: 27, padding: '0 8px' }}
+                style={{ height: 27, padding: "0 8px" }}
                 title="展开到全屏家庭工作台（保持当前会话与聊天目标一致）"
                 onClick={() => onExpandFullscreen(selectedScopeId, target)}
               >
@@ -560,23 +645,24 @@ export function FamilyWorkbench({
       {isSplitMode && (
         <div className="dshfam-split-bar">
           {scopedRooms.map((room) => {
-            const active = target.kind === 'group' && target.groupId === room.id;
+            const active =
+              target.kind === "group" && target.groupId === room.id;
             return (
               <button
                 key={room.id}
                 type="button"
                 className="dshfam-split-pill"
                 data-active={String(active)}
-                onClick={() => setTarget({ kind: 'group', groupId: room.id })}
+                onClick={() => setTarget({ kind: "group", groupId: room.id })}
               >
                 {room.running ? (
                   <span className="dshfam-live-green-dot" />
-                ) : room.id === 'family-main' ? (
+                ) : room.id === "family-main" ? (
                   <Users size={12} />
                 ) : (
                   <Hash size={12} />
                 )}
-                <span>{room.title.replace(/^🏠\s*/u, '')}</span>
+                <span>{room.title.replace(/^🏠\s*/u, "")}</span>
                 {room.unreadCount > 0 && !active && (
                   <span className="sh-unread-badge">{room.unreadCount}</span>
                 )}
@@ -584,15 +670,22 @@ export function FamilyWorkbench({
             );
           })}
 
-          <span style={{ width: 1, height: 15, background: 'var(--sh-border)', flexShrink: 0 }} />
+          <span
+            style={{
+              width: 1,
+              height: 15,
+              background: "var(--sh-border)",
+              flexShrink: 0,
+            }}
+          />
 
           {state.members.map((m) => {
-            const active = target.kind === 'member' && target.memberId === m.id;
+            const active = target.kind === "member" && target.memberId === m.id;
             const snap = snapshotByMember.get(m.id);
             const memberBusy =
-              snap?.state === 'working' ||
-              snap?.state === 'in_call' ||
-              snap?.state === 'awaiting_approval';
+              snap?.state === "working" ||
+              snap?.state === "in_call" ||
+              snap?.state === "awaiting_approval";
             const unread = snap?.unreadCount ?? 0;
             return (
               <button
@@ -601,12 +694,19 @@ export function FamilyWorkbench({
                 className="dshfam-split-pill"
                 data-active={String(active)}
                 style={!m.enabled ? { opacity: 0.5 } : undefined}
-                onClick={() => setTarget({ kind: 'member', memberId: m.id })}
+                onClick={() => setTarget({ kind: "member", memberId: m.id })}
               >
-                <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} alt={m.name} size={15} />
+                <MemberAvatar
+                  avatar={m.avatar}
+                  bodyKind={m.body.kind}
+                  alt={m.name}
+                  size={15}
+                />
                 <span>{m.name}</span>
                 {memberBusy && <span className="dshfam-live-green-dot" />}
-                {unread > 0 && !active && <span className="sh-unread-badge">{unread}</span>}
+                {unread > 0 && !active && (
+                  <span className="sh-unread-badge">{unread}</span>
+                )}
               </button>
             );
           })}
@@ -619,15 +719,15 @@ export function FamilyWorkbench({
       {errorBanner && (
         <div
           style={{
-            margin: '8px 16px 0',
-            padding: '8px 12px',
+            margin: "8px 16px 0",
+            padding: "8px 12px",
             borderRadius: 8,
-            background: 'var(--sh-destructive-soft)',
-            color: 'var(--sh-destructive)',
+            background: "var(--sh-destructive-soft)",
+            color: "var(--sh-destructive)",
             fontSize: 12.5,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
           }}
         >
           <span>{errorBanner}</span>
@@ -649,7 +749,7 @@ export function FamilyWorkbench({
           <aside className="dshfam-sidebar">
             <div className="dshfam-sidebar-scroll">
               {/* 群聊分组 */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 <div className="sh-section-label">
                   <span>群聊空间</span>
                   <button
@@ -666,13 +766,13 @@ export function FamilyWorkbench({
                 {creatingGroup && (
                   <div
                     style={{
-                      margin: '4px 4px 6px',
+                      margin: "4px 4px 6px",
                       padding: 10,
                       borderRadius: 8,
-                      border: '1px solid var(--sh-border)',
-                      background: 'var(--sh-card)',
-                      display: 'flex',
-                      flexDirection: 'column',
+                      border: "1px solid var(--sh-border)",
+                      background: "var(--sh-card)",
+                      display: "flex",
+                      flexDirection: "column",
                       gap: 8,
                     }}
                   >
@@ -683,7 +783,7 @@ export function FamilyWorkbench({
                       value={newGroupTitle}
                       onChange={(e) => setNewGroupTitle(e.target.value)}
                     />
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                       {enabledMembers.map((m) => {
                         const selected = newGroupMembers.includes(m.id);
                         return (
@@ -693,22 +793,37 @@ export function FamilyWorkbench({
                             className="dshfam-chip"
                             style={
                               selected
-                                ? { borderColor: 'var(--sh-fg)', background: 'var(--sh-accent)' }
+                                ? {
+                                    borderColor: "var(--sh-fg)",
+                                    background: "var(--sh-accent)",
+                                  }
                                 : undefined
                             }
                             onClick={() =>
                               setNewGroupMembers((prev) =>
-                                prev.includes(m.id) ? prev.filter((x) => x !== m.id) : [...prev, m.id]
+                                prev.includes(m.id)
+                                  ? prev.filter((x) => x !== m.id)
+                                  : [...prev, m.id],
                               )
                             }
                           >
-                            <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} size={14} />
+                            <MemberAvatar
+                              avatar={m.avatar}
+                              bodyKind={m.body.kind}
+                              size={14}
+                            />
                             <span>{m.name}</span>
                           </button>
                         );
                       })}
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "flex-end",
+                        gap: 6,
+                      }}
+                    >
                       <button
                         type="button"
                         className="sh-btn sh-btn-ghost sh-btn-sm"
@@ -729,7 +844,8 @@ export function FamilyWorkbench({
                 )}
 
                 {scopedRooms.map((room) => {
-                  const isSelected = target.kind === 'group' && target.groupId === room.id;
+                  const isSelected =
+                    target.kind === "group" && target.groupId === room.id;
                   const hasUnread = room.unreadCount > 0 && !isSelected;
                   return (
                     <div
@@ -738,36 +854,53 @@ export function FamilyWorkbench({
                       data-active={String(isSelected)}
                       role="button"
                       tabIndex={0}
-                      onClick={() => setTarget({ kind: 'group', groupId: room.id })}
+                      onClick={() =>
+                        setTarget({ kind: "group", groupId: room.id })
+                      }
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') setTarget({ kind: 'group', groupId: room.id });
+                        if (e.key === "Enter")
+                          setTarget({ kind: "group", groupId: room.id });
                       }}
                     >
-                      <span className="dshfam-avatar" style={{ width: 26, height: 26 }}>
-                        {room.id === 'family-main' ? <Users size={13} /> : <Hash size={13} />}
+                      <span
+                        className="dshfam-avatar"
+                        style={{ width: 26, height: 26 }}
+                      >
+                        {room.id === "family-main" ? (
+                          <Users size={13} />
+                        ) : (
+                          <Hash size={13} />
+                        )}
                       </span>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div
                           style={{
                             fontSize: 12.5,
                             fontWeight: hasUnread ? 700 : undefined,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
                           }}
                         >
-                          {room.title.replace(/^🏠\s*/u, '')}
+                          {room.title.replace(/^🏠\s*/u, "")}
                         </div>
                       </div>
                       {room.running && (
-                        <span className="dshfam-dot" data-state="working" title="群聊进行中" />
+                        <span
+                          className="dshfam-dot"
+                          data-state="working"
+                          title="群聊进行中"
+                        />
                       )}
                       {hasUnread ? (
-                        <span className="sh-unread-badge" title={`${room.unreadCount} 条未读新消息`}>
+                        <span
+                          className="sh-unread-badge"
+                          title={`${room.unreadCount} 条未读新消息`}
+                        >
                           {room.unreadCount}
                         </span>
                       ) : (
-                        room.id !== 'family-main' &&
+                        room.id !== "family-main" &&
                         !room.running && (
                           <button
                             type="button"
@@ -776,10 +909,16 @@ export function FamilyWorkbench({
                             title="移除专题群"
                             onClick={(e) => {
                               e.stopPropagation();
-                              void familyClientApi.deleteGroup(selectedScopeId, room.id).then(() => {
-                                if (isSelected) setTarget({ kind: 'group', groupId: 'family-main' });
-                                return refresh();
-                              });
+                              void familyClientApi
+                                .deleteGroup(selectedScopeId, room.id)
+                                .then(() => {
+                                  if (isSelected)
+                                    setTarget({
+                                      kind: "group",
+                                      groupId: "family-main",
+                                    });
+                                  return refresh();
+                                });
                             }}
                           >
                             <Trash2 size={11} />
@@ -792,7 +931,7 @@ export function FamilyWorkbench({
               </div>
 
               {/* 家庭成员分组 */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 <div className="sh-section-label">
                   <span>家庭成员 ({state.members.length})</span>
                   <button
@@ -809,15 +948,15 @@ export function FamilyWorkbench({
                 {state.members.length === 0 ? (
                   <div
                     style={{
-                      margin: '4px 4px 0',
+                      margin: "4px 4px 0",
                       padding: 12,
                       borderRadius: 9,
-                      border: '1px dashed var(--sh-border)',
-                      display: 'flex',
-                      flexDirection: 'column',
+                      border: "1px dashed var(--sh-border)",
+                      display: "flex",
+                      flexDirection: "column",
                       gap: 8,
                       fontSize: 12,
-                      color: 'var(--sh-muted-fg)',
+                      color: "var(--sh-muted-fg)",
                     }}
                   >
                     <div>尚未登记成员，可一键导入预设家庭或自由创建：</div>
@@ -833,9 +972,15 @@ export function FamilyWorkbench({
                 ) : (
                   state.members.map((member) => {
                     const snap = snapshotByMember.get(member.id);
-                    const st = !member.enabled ? 'sleeping' : (snap?.state ?? 'sleeping');
-                    const isSelected = target.kind === 'member' && target.memberId === member.id;
-                    const memberUnread = (snap?.unreadCount ?? 0) > 0 && !isSelected ? snap!.unreadCount! : 0;
+                    const st = !member.enabled
+                      ? "sleeping"
+                      : (snap?.state ?? "sleeping");
+                    const isSelected =
+                      target.kind === "member" && target.memberId === member.id;
+                    const memberUnread =
+                      (snap?.unreadCount ?? 0) > 0 && !isSelected
+                        ? snap!.unreadCount!
+                        : 0;
                     return (
                       <div
                         key={member.id}
@@ -844,9 +989,12 @@ export function FamilyWorkbench({
                         style={!member.enabled ? { opacity: 0.52 } : undefined}
                         role="button"
                         tabIndex={0}
-                        onClick={() => setTarget({ kind: 'member', memberId: member.id })}
+                        onClick={() =>
+                          setTarget({ kind: "member", memberId: member.id })
+                        }
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter') setTarget({ kind: 'member', memberId: member.id });
+                          if (e.key === "Enter")
+                            setTarget({ kind: "member", memberId: member.id });
                         }}
                       >
                         <MemberAvatar
@@ -856,39 +1004,52 @@ export function FamilyWorkbench({
                           size={28}
                         />
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 5,
+                            }}
+                          >
                             <span
                               style={{
                                 fontSize: 12.5,
                                 fontWeight: memberUnread > 0 ? 700 : undefined,
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
                               }}
                             >
                               {member.name}
                             </span>
-                            <span className="sh-badge" style={{ height: 17, fontSize: 10 }}>
+                            <span
+                              className="sh-badge"
+                              style={{ height: 17, fontSize: 10 }}
+                            >
                               {member.body.kind}
                             </span>
                           </div>
                           <div
                             style={{
                               fontSize: 11,
-                              color: 'var(--sh-muted-fg)',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap',
+                              color: "var(--sh-muted-fg)",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
                             }}
                           >
                             {!member.enabled
-                              ? '休假停用中'
-                              : snap?.statusText || STATE_LABELS[st] || `@${member.id}`}
+                              ? "休假停用中"
+                              : snap?.statusText ||
+                                STATE_LABELS[st] ||
+                                `@${member.id}`}
                           </div>
                         </div>
 
                         {memberUnread > 0 && (
-                          <span className="sh-unread-badge">{memberUnread}</span>
+                          <span className="sh-unread-badge">
+                            {memberUnread}
+                          </span>
                         )}
                         <button
                           type="button"
@@ -914,31 +1075,47 @@ export function FamilyWorkbench({
 
         {/* 中栏：对话主舞台 */}
         <main className="dshfam-main">
-          {target.kind === 'group' && activeGroupRoom ? (
+          {target.kind === "group" && activeGroupRoom ? (
             <>
               <div className="dshfam-stage-bar">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                  <span className="dshfam-avatar" style={{ width: 30, height: 30 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    minWidth: 0,
+                  }}
+                >
+                  <span
+                    className="dshfam-avatar"
+                    style={{ width: 30, height: 30 }}
+                  >
                     <Users size={15} />
                   </span>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 8 }}
+                    >
                       <span style={{ fontWeight: 600, fontSize: 14 }}>
-                        {activeGroupRoom.title.replace(/^🏠\s*/u, '')}
+                        {activeGroupRoom.title.replace(/^🏠\s*/u, "")}
                       </span>
-                      <span className="sh-badge">{groupParticipantMembers.length} 位在岗成员</span>
+                      <span className="sh-badge">
+                        {groupParticipantMembers.length} 位在岗成员
+                      </span>
                     </div>
-                    <div style={{ fontSize: 11.5, color: 'var(--sh-muted-fg)' }}>
+                    <div
+                      style={{ fontSize: 11.5, color: "var(--sh-muted-fg)" }}
+                    >
                       {activeGroupRoom.activeSpeakerId
                         ? `@${activeGroupRoom.activeSpeakerId} 正在说话…`
                         : activeGroupRoom.lastPassMemberName
                           ? `${activeGroupRoom.lastPassMemberName} 已阅（微笑旁听）`
-                          : '一家人唠嗑闲聊与技术协作空间 · 支持 @点名互动'}
+                          : "一家人唠嗑闲聊与技术协作空间 · 支持 @点名互动"}
                     </div>
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <GroupMembersModelPopover
                     members={groupParticipantMembers}
                     onUpdated={() => void refresh()}
@@ -977,24 +1154,26 @@ export function FamilyWorkbench({
                 className="dshfam-stream"
                 onScroll={(e) => {
                   const el = e.currentTarget;
-                  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+                  const nearBottom =
+                    el.scrollHeight - el.scrollTop - el.clientHeight < 64;
                   stickToBottomRef.current = nearBottom;
                   if (nearBottom) setShowJumpBottom(false);
                 }}
               >
-                {activeGroupRoom.messages.length === 0 && !activeGroupRoom.streamingDraft ? (
+                {activeGroupRoom.messages.length === 0 &&
+                !activeGroupRoom.streamingDraft ? (
                   <div
                     style={{
-                      margin: 'auto',
+                      margin: "auto",
                       maxWidth: 480,
-                      textAlign: 'center',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
+                      textAlign: "center",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
                       gap: 14,
                     }}
                   >
-                    <div style={{ display: 'flex', gap: 6 }}>
+                    <div style={{ display: "flex", gap: 6 }}>
                       {groupParticipantMembers.slice(0, 5).map((m) => (
                         <MemberAvatar
                           key={m.id}
@@ -1007,23 +1186,39 @@ export function FamilyWorkbench({
                     </div>
                     <div>
                       <div style={{ fontSize: 15, fontWeight: 600 }}>
-                        欢迎来到「{activeGroupRoom.title.replace(/^🏠\s*/u, '')}」
+                        欢迎来到「{activeGroupRoom.title.replace(/^🏠\s*/u, "")}
+                        」
                       </div>
-                      <div style={{ fontSize: 12.5, color: 'var(--sh-muted-fg)', marginTop: 4 }}>
+                      <div
+                        style={{
+                          fontSize: 12.5,
+                          color: "var(--sh-muted-fg)",
+                          marginTop: 4,
+                        }}
+                      >
                         平时唠嗑闲聊有温度，遇到当前会话的技术问题也能随时拉家里人一起出主意。
                       </div>
                     </div>
                     {groupParticipantMembers.length > 0 && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 8 }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          justifyContent: "center",
+                          gap: 8,
+                        }}
+                      >
                         {[
-                          '大家今天都在忙啥呢？出来冒个泡唠两句～',
-                          '结合当前会话遇到的问题，大家一起出出主意吧',
+                          "大家今天都在忙啥呢？出来冒个泡唠两句～",
+                          "结合当前会话遇到的问题，大家一起出出主意吧",
                         ].map((promptIdea) => (
                           <button
                             key={promptIdea}
                             type="button"
                             className="sh-btn sh-btn-outline sh-btn-sm"
-                            onClick={() => dispatchMessageNonBlocking(promptIdea)}
+                            onClick={() =>
+                              dispatchMessageNonBlocking(promptIdea)
+                            }
                           >
                             {promptIdea}
                           </button>
@@ -1034,10 +1229,16 @@ export function FamilyWorkbench({
                 ) : (
                   <>
                     {activeGroupRoom.messages.map((msg) => {
-                      const isHuman = msg.senderId === 'human';
-                      const senderMember = state.members.find((m) => m.id === msg.senderId);
+                      const isHuman = msg.senderId === "human";
+                      const senderMember = state.members.find(
+                        (m) => m.id === msg.senderId,
+                      );
                       return (
-                        <div key={msg.id} className="sh-msg-row" data-mine={String(isHuman)}>
+                        <div
+                          key={msg.id}
+                          className="sh-msg-row"
+                          data-mine={String(isHuman)}
+                        >
                           {!isHuman && (
                             <MemberAvatar
                               avatar={senderMember?.avatar ?? msg.senderAvatar}
@@ -1048,11 +1249,27 @@ export function FamilyWorkbench({
                           )}
                           <div className="sh-msg-card">
                             <div className="sh-msg-head">
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <span style={{ fontWeight: 600, fontSize: 12.5 }}>{msg.senderName}</span>
-                                {!isHuman && <span className="sh-badge">@{msg.senderId}</span>}
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 6,
+                                }}
+                              >
+                                <span
+                                  style={{ fontWeight: 600, fontSize: 12.5 }}
+                                >
+                                  {msg.senderName}
+                                </span>
+                                {!isHuman && (
+                                  <span className="sh-badge">
+                                    @{msg.senderId}
+                                  </span>
+                                )}
                                 {senderMember && (
-                                  <span className="sh-badge">{senderMember.body.kind}</span>
+                                  <span className="sh-badge">
+                                    {senderMember.body.kind}
+                                  </span>
                                 )}
                               </div>
                               <div className="sh-msg-actions">
@@ -1061,7 +1278,9 @@ export function FamilyWorkbench({
                                   <HandoffPopoverButton
                                     sourceAuthor={msg.senderName}
                                     content={msg.content}
-                                    candidates={enabledMembers.filter((m) => m.id !== msg.senderId)}
+                                    candidates={enabledMembers.filter(
+                                      (m) => m.id !== msg.senderId,
+                                    )}
                                     onHandoff={handleHandoffToMember}
                                   />
                                 )}
@@ -1070,7 +1289,9 @@ export function FamilyWorkbench({
                             <RichMessageContent
                               content={msg.content}
                               validMemberIds={validMemberIdSet}
-                              onSelectMember={(mId) => setTarget({ kind: 'member', memberId: mId })}
+                              onSelectMember={(mId) =>
+                                setTarget({ kind: "member", memberId: mId })
+                              }
                             />
                           </div>
                         </div>
@@ -1084,7 +1305,9 @@ export function FamilyWorkbench({
                           avatar={activeGroupRoom.streamingDraft.senderAvatar}
                           bodyKind={
                             state.members.find(
-                              (m) => m.id === activeGroupRoom.streamingDraft?.senderId
+                              (m) =>
+                                m.id ===
+                                activeGroupRoom.streamingDraft?.senderId,
                             )?.body.kind
                           }
                           alt={activeGroupRoom.streamingDraft.senderName}
@@ -1092,7 +1315,13 @@ export function FamilyWorkbench({
                         />
                         <div className="sh-msg-card">
                           <div className="sh-msg-head">
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                              }}
+                            >
                               <span style={{ fontWeight: 600, fontSize: 12.5 }}>
                                 {activeGroupRoom.streamingDraft.senderName}
                               </span>
@@ -1112,7 +1341,12 @@ export function FamilyWorkbench({
                               validMemberIds={validMemberIdSet}
                             />
                           ) : (
-                            <div style={{ color: 'var(--sh-muted-fg)', fontSize: 12.5 }}>
+                            <div
+                              style={{
+                                color: "var(--sh-muted-fg)",
+                                fontSize: 12.5,
+                              }}
+                            >
                               正在组织发言…
                             </div>
                           )}
@@ -1129,11 +1363,11 @@ export function FamilyWorkbench({
                   className="sh-btn sh-btn-secondary sh-btn-sm"
                   onClick={scrollToBottom}
                   style={{
-                    position: 'absolute',
+                    position: "absolute",
                     bottom: 108,
-                    left: '50%',
-                    transform: 'translateX(-50%)',
-                    boxShadow: 'var(--sh-shadow-lg)',
+                    left: "50%",
+                    transform: "translateX(-50%)",
+                    boxShadow: "var(--sh-shadow-lg)",
                     borderRadius: 999,
                   }}
                 >
@@ -1157,7 +1391,7 @@ export function FamilyWorkbench({
                   })
                 }
                 onSlashCommand={(cmd) => {
-                  if (cmd === 'clear') void handleClearCurrentHistory();
+                  if (cmd === "clear") void handleClearCurrentHistory();
                 }}
                 disabled={groupParticipantMembers.length === 0}
                 externalInsertText={composerInsert}
@@ -1166,7 +1400,14 @@ export function FamilyWorkbench({
           ) : activeMember ? (
             <>
               <div className="dshfam-stage-bar">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    minWidth: 0,
+                  }}
+                >
                   <MemberAvatar
                     avatar={activeMember.avatar}
                     bodyKind={activeMember.body.kind}
@@ -1174,8 +1415,17 @@ export function FamilyWorkbench({
                     size={32}
                   />
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                      <span style={{ fontWeight: 600, fontSize: 14 }}>{activeMember.name}</span>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <span style={{ fontWeight: 600, fontSize: 14 }}>
+                        {activeMember.name}
+                      </span>
                       <span className="sh-badge">@{activeMember.id}</span>
                       <span className="sh-badge">{activeMember.body.kind}</span>
                       {(activeMemberSnapshot?.queueLength ?? 0) > 0 && (
@@ -1187,18 +1437,26 @@ export function FamilyWorkbench({
                     <div
                       style={{
                         fontSize: 11.5,
-                        color: 'var(--sh-muted-fg)',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
+                        color: "var(--sh-muted-fg)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
                       }}
                     >
-                      {activeMemberSnapshot?.statusText || activeMember.specialty}
+                      {activeMemberSnapshot?.statusText ||
+                        activeMember.specialty}
                     </div>
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    flexShrink: 0,
+                  }}
+                >
                   <MemberPermissionQuickPopover
                     member={activeMember}
                     onUpdated={() => void refresh()}
@@ -1220,7 +1478,10 @@ export function FamilyWorkbench({
                     className="sh-btn sh-btn-ghost sh-btn-sm"
                     title="休眠当前身体，下次派活开启全新上下文"
                     onClick={() =>
-                      void familyClientApi.resetSession(selectedScopeId, activeMember.id)
+                      void familyClientApi.resetSession(
+                        selectedScopeId,
+                        activeMember.id,
+                      )
                     }
                   >
                     <RotateCcw size={12} />
@@ -1244,7 +1505,8 @@ export function FamilyWorkbench({
                 className="dshfam-stream"
                 onScroll={(e) => {
                   const el = e.currentTarget;
-                  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+                  const nearBottom =
+                    el.scrollHeight - el.scrollTop - el.clientHeight < 64;
                   stickToBottomRef.current = nearBottom;
                   if (nearBottom) setShowJumpBottom(false);
                 }}
@@ -1252,12 +1514,12 @@ export function FamilyWorkbench({
                 {(activeMemberSnapshot?.entries ?? []).length === 0 ? (
                   <div
                     style={{
-                      margin: 'auto',
+                      margin: "auto",
                       maxWidth: 460,
-                      textAlign: 'center',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
+                      textAlign: "center",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
                       gap: 12,
                     }}
                   >
@@ -1271,14 +1533,29 @@ export function FamilyWorkbench({
                       <div style={{ fontSize: 15, fontWeight: 600 }}>
                         {activeMember.name} · 独立工作书房
                       </div>
-                      <div style={{ fontSize: 12.5, color: 'var(--sh-muted-fg)', marginTop: 4 }}>
-                        {activeMember.specialty}。直接交代任务即可，遇到需要其他成员配合时 TA 会主动掏出随身手机联系家里人。
+                      <div
+                        style={{
+                          fontSize: 12.5,
+                          color: "var(--sh-muted-fg)",
+                          marginTop: 4,
+                        }}
+                      >
+                        {activeMember.specialty}
+                        。直接交代任务即可，遇到需要其他成员配合时 TA
+                        会主动掏出随身手机联系家里人。
                       </div>
                     </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 8 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        justifyContent: "center",
+                        gap: 8,
+                      }}
+                    >
                       {[
-                        '先看看当前工作区目录结构，告诉我你准备怎么开展工作',
-                        '用你的随身手机看看家里还有哪些伙伴在线',
+                        "先看看当前工作区目录结构，告诉我你准备怎么开展工作",
+                        "用你的随身手机看看家里还有哪些伙伴在线",
                       ].map((idea) => (
                         <button
                           key={idea}
@@ -1293,12 +1570,20 @@ export function FamilyWorkbench({
                   </div>
                 ) : (
                   (activeMemberSnapshot?.entries ?? []).map((entry) => {
-                    const isHuman = entry.role === 'human';
+                    const isHuman = entry.role === "human";
                     return (
-                      <div key={entry.id} className="sh-msg-row" data-mine={String(isHuman)}>
+                      <div
+                        key={entry.id}
+                        className="sh-msg-row"
+                        data-mine={String(isHuman)}
+                      >
                         {!isHuman && (
                           <MemberAvatar
-                            avatar={entry.role === 'member' ? activeMember.avatar : 'lobe:deepseek'}
+                            avatar={
+                              entry.role === "member"
+                                ? activeMember.avatar
+                                : "lobe:deepseek"
+                            }
                             bodyKind={activeMember.body.kind}
                             alt={entry.authorName}
                             size={30}
@@ -1306,13 +1591,26 @@ export function FamilyWorkbench({
                         )}
                         <div className="sh-msg-card">
                           <div className="sh-msg-head">
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <span style={{ fontWeight: 600, fontSize: 12.5 }}>{entry.authorName}</span>
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                              }}
+                            >
+                              <span style={{ fontWeight: 600, fontSize: 12.5 }}>
+                                {entry.authorName}
+                              </span>
                               {entry.statusSummary && (
-                                <span className="sh-badge">{entry.statusSummary}</span>
+                                <span className="sh-badge">
+                                  {entry.statusSummary}
+                                </span>
                               )}
                               {entry.streaming && (
-                                <span className="sh-badge" style={{ color: 'var(--sh-emerald)' }}>
+                                <span
+                                  className="sh-badge"
+                                  style={{ color: "var(--sh-emerald)" }}
+                                >
                                   输出中
                                 </span>
                               )}
@@ -1320,12 +1618,12 @@ export function FamilyWorkbench({
                             {!entry.streaming && entry.content && (
                               <div className="sh-msg-actions">
                                 <CopyMessageButton text={entry.content} />
-                                {entry.role === 'member' && (
+                                {entry.role === "member" && (
                                   <HandoffPopoverButton
                                     sourceAuthor={activeMember.name}
                                     content={entry.content}
                                     candidates={enabledMembers.filter(
-                                      (m) => m.id !== activeMember.id
+                                      (m) => m.id !== activeMember.id,
                                     )}
                                     onHandoff={handleHandoffToMember}
                                   />
@@ -1337,11 +1635,18 @@ export function FamilyWorkbench({
                             <RichMessageContent
                               content={entry.content}
                               validMemberIds={validMemberIdSet}
-                              onSelectMember={(mId) => setTarget({ kind: 'member', memberId: mId })}
+                              onSelectMember={(mId) =>
+                                setTarget({ kind: "member", memberId: mId })
+                              }
                             />
                           ) : (
-                            <div style={{ color: 'var(--sh-muted-fg)', fontSize: 12.5 }}>
-                              {entry.statusSummary || '正在思考与推进…'}
+                            <div
+                              style={{
+                                color: "var(--sh-muted-fg)",
+                                fontSize: 12.5,
+                              }}
+                            >
+                              {entry.statusSummary || "正在思考与推进…"}
                             </div>
                           )}
                         </div>
@@ -1357,11 +1662,11 @@ export function FamilyWorkbench({
                   className="sh-btn sh-btn-secondary sh-btn-sm"
                   onClick={scrollToBottom}
                   style={{
-                    position: 'absolute',
+                    position: "absolute",
                     bottom: 108,
-                    left: '50%',
-                    transform: 'translateX(-50%)',
-                    boxShadow: 'var(--sh-shadow-lg)',
+                    left: "50%",
+                    transform: "translateX(-50%)",
+                    boxShadow: "var(--sh-shadow-lg)",
                     borderRadius: 999,
                   }}
                 >
@@ -1389,9 +1694,12 @@ export function FamilyWorkbench({
                   })
                 }
                 onSlashCommand={(cmd) => {
-                  if (cmd === 'clear') void handleClearCurrentHistory();
-                  if (cmd === 'reset') {
-                    void familyClientApi.resetSession(selectedScopeId, activeMember.id);
+                  if (cmd === "clear") void handleClearCurrentHistory();
+                  if (cmd === "reset") {
+                    void familyClientApi.resetSession(
+                      selectedScopeId,
+                      activeMember.id,
+                    );
                   }
                 }}
                 disabled={!activeMember.enabled}
@@ -1399,7 +1707,7 @@ export function FamilyWorkbench({
               />
             </>
           ) : (
-            <div style={{ margin: 'auto', color: 'var(--sh-muted-fg)' }}>
+            <div style={{ margin: "auto", color: "var(--sh-muted-fg)" }}>
               请在左侧选择群聊或家庭成员
             </div>
           )}
@@ -1408,43 +1716,61 @@ export function FamilyWorkbench({
         {/* 右栏可折叠协作检查器 (Inspector) */}
         {inspectorOpen && (
           <aside className="dshfam-inspector">
-            <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--sh-border)' }}>
+            <div
+              style={{
+                padding: "10px 12px",
+                borderBottom: "1px solid var(--sh-border)",
+              }}
+            >
               <div className="sh-tabs-list">
                 <button
                   type="button"
                   className="sh-tabs-trigger"
-                  data-active={String(inspectorTab === 'calls')}
-                  onClick={() => setInspectorTab('calls')}
+                  data-active={String(inspectorTab === "calls")}
+                  onClick={() => setInspectorTab("calls")}
                 >
                   手机通话 ({scopedCallRecords.length})
                 </button>
                 <button
                   type="button"
                   className="sh-tabs-trigger"
-                  data-active={String(inspectorTab === 'context')}
-                  onClick={() => setInspectorTab('context')}
+                  data-active={String(inspectorTab === "context")}
+                  onClick={() => setInspectorTab("context")}
                 >
-                  {target.kind === 'member' ? '灵魂与档案' : '群内成员'}
+                  {target.kind === "member" ? "灵魂与档案" : "群内成员"}
                 </button>
               </div>
             </div>
 
-            <div style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {inspectorTab === 'calls' ? (
+            <div
+              style={{
+                flex: 1,
+                overflowY: "auto",
+                padding: 12,
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+              }}
+            >
+              {inspectorTab === "calls" ? (
                 scopedCallRecords.length === 0 ? (
                   <div
                     style={{
-                      padding: '24px 10px',
-                      textAlign: 'center',
-                      color: 'var(--sh-muted-fg)',
+                      padding: "24px 10px",
+                      textAlign: "center",
+                      color: "var(--sh-muted-fg)",
                       fontSize: 12,
                       lineHeight: 1.6,
                     }}
                   >
-                    <PhoneCall size={20} style={{ opacity: 0.45, marginBottom: 6 }} />
+                    <PhoneCall
+                      size={20}
+                      style={{ opacity: 0.45, marginBottom: 6 }}
+                    />
                     <div>暂无跨成员通话</div>
                     <div style={{ fontSize: 11, marginTop: 4 }}>
-                      当成员在执行任务途中主动拨打 `phone_call` 商量方案、协作或拒绝越界要求时，通话纪要会实时呈现在此。
+                      当成员在执行任务途中主动拨打 `phone_call`
+                      商量方案、协作或拒绝越界要求时，通话纪要会实时呈现在此。
                     </div>
                   </div>
                 ) : (
@@ -1452,54 +1778,67 @@ export function FamilyWorkbench({
                     <div
                       key={call.id}
                       style={{
-                        padding: '10px 11px',
+                        padding: "10px 11px",
                         borderRadius: 8,
-                        border: '1px solid var(--sh-border)',
-                        background: 'var(--sh-card)',
+                        border: "1px solid var(--sh-border)",
+                        background: "var(--sh-card)",
                         fontSize: 12,
-                        display: 'flex',
-                        flexDirection: 'column',
+                        display: "flex",
+                        flexDirection: "column",
                         gap: 6,
                       }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 6,
+                        }}
+                      >
                         <span style={{ fontWeight: 600 }}>
                           {call.fromMemberName} ➔ {call.toMemberName}
                         </span>
                         <span className="sh-badge">{call.status}</span>
                       </div>
-                      <div style={{ color: 'var(--sh-muted-fg)', fontSize: 11.5 }}>
+                      <div
+                        style={{ color: "var(--sh-muted-fg)", fontSize: 11.5 }}
+                      >
                         {call.message.slice(0, 120)}
                       </div>
                       {call.reply && (
                         <div
                           style={{
                             paddingTop: 6,
-                            borderTop: '1px dashed var(--sh-border)',
+                            borderTop: "1px dashed var(--sh-border)",
                             fontSize: 11.5,
                           }}
                         >
                           {call.reply.slice(0, 160)}
-                          {call.reply.length > 160 ? '…' : ''}
+                          {call.reply.length > 160 ? "…" : ""}
                         </div>
                       )}
                     </div>
                   ))
                 )
-              ) : target.kind === 'member' && activeMember ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              ) : target.kind === "member" && activeMember ? (
+                <div
+                  style={{ display: "flex", flexDirection: "column", gap: 12 }}
+                >
                   <div
                     style={{
                       padding: 12,
                       borderRadius: 9,
-                      border: '1px solid var(--sh-border)',
-                      background: 'var(--sh-card)',
-                      display: 'flex',
-                      flexDirection: 'column',
+                      border: "1px solid var(--sh-border)",
+                      background: "var(--sh-card)",
+                      display: "flex",
+                      flexDirection: "column",
                       gap: 10,
                     }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 10 }}
+                    >
                       <MemberAvatar
                         avatar={activeMember.avatar}
                         bodyKind={activeMember.body.kind}
@@ -1507,25 +1846,36 @@ export function FamilyWorkbench({
                         size={40}
                       />
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 600, fontSize: 13.5 }}>{activeMember.name}</div>
-                        <div style={{ display: 'flex', gap: 5, marginTop: 3, flexWrap: 'wrap' }}>
+                        <div style={{ fontWeight: 600, fontSize: 13.5 }}>
+                          {activeMember.name}
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 5,
+                            marginTop: 3,
+                            flexWrap: "wrap",
+                          }}
+                        >
                           <span className="sh-badge">@{activeMember.id}</span>
-                          <span className="sh-badge">{activeMember.body.kind}</span>
+                          <span className="sh-badge">
+                            {activeMember.body.kind}
+                          </span>
                           <span className="sh-badge">
                             {formatShortModelBadge(
                               activeMember.body.model,
-                              activeMember.body.reasoningEffort
+                              activeMember.body.reasoningEffort,
                             )}
                           </span>
                         </div>
                       </div>
                     </div>
 
-                    <div style={{ fontSize: 12, color: 'var(--sh-muted-fg)' }}>
+                    <div style={{ fontSize: 12, color: "var(--sh-muted-fg)" }}>
                       {activeMember.specialty}
                     </div>
 
-                    <div style={{ display: 'flex', gap: 6 }}>
+                    <div style={{ display: "flex", gap: 6 }}>
                       <button
                         type="button"
                         className="sh-btn sh-btn-outline sh-btn-sm"
@@ -1540,28 +1890,37 @@ export function FamilyWorkbench({
                         className="sh-btn sh-btn-outline sh-btn-sm"
                         onClick={() =>
                           void familyClientApi
-                            .updateMember(activeMember.id, { enabled: !activeMember.enabled })
+                            .updateMember(activeMember.id, {
+                              enabled: !activeMember.enabled,
+                            })
                             .then(() => refresh())
                         }
                       >
-                        {activeMember.enabled ? '设为休假' : '恢复在岗'}
+                        {activeMember.enabled ? "设为休假" : "恢复在岗"}
                       </button>
                     </div>
                   </div>
 
                   <div>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sh-muted-fg)', marginBottom: 6 }}>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "var(--sh-muted-fg)",
+                        marginBottom: 6,
+                      }}
+                    >
                       灵魂准则（Soul Prompt）
                     </div>
                     <div
                       style={{
                         padding: 11,
                         borderRadius: 8,
-                        border: '1px solid var(--sh-border)',
-                        background: 'var(--sh-card)',
+                        border: "1px solid var(--sh-border)",
+                        background: "var(--sh-card)",
                         fontSize: 12,
                         lineHeight: 1.58,
-                        whiteSpace: 'pre-wrap',
+                        whiteSpace: "pre-wrap",
                       }}
                     >
                       {activeMember.soulPrompt}
@@ -1571,12 +1930,14 @@ export function FamilyWorkbench({
                   <button
                     type="button"
                     className="sh-btn sh-btn-destructive sh-btn-sm"
-                    style={{ alignSelf: 'flex-start' }}
+                    style={{ alignSelf: "flex-start" }}
                     onClick={() =>
-                      void familyClientApi.deleteMember(activeMember.id).then(() => {
-                        setTarget({ kind: 'group', groupId: 'family-main' });
-                        return refresh();
-                      })
+                      void familyClientApi
+                        .deleteMember(activeMember.id)
+                        .then(() => {
+                          setTarget({ kind: "group", groupId: "family-main" });
+                          return refresh();
+                        })
                     }
                   >
                     <Trash2 size={12} />
@@ -1584,33 +1945,49 @@ export function FamilyWorkbench({
                   </button>
                 </div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sh-muted-fg)', padding: '0 2px' }}>
+                <div
+                  style={{ display: "flex", flexDirection: "column", gap: 6 }}
+                >
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: "var(--sh-muted-fg)",
+                      padding: "0 2px",
+                    }}
+                  >
                     本群在岗成员（点击可 @ 点名）
                   </div>
                   {groupParticipantMembers.map((m) => (
                     <div
                       key={m.id}
                       style={{
-                        padding: '8px 10px',
+                        padding: "8px 10px",
                         borderRadius: 8,
-                        border: '1px solid var(--sh-border)',
-                        background: 'var(--sh-card)',
-                        display: 'flex',
-                        alignItems: 'center',
+                        border: "1px solid var(--sh-border)",
+                        background: "var(--sh-card)",
+                        display: "flex",
+                        alignItems: "center",
                         gap: 9,
                       }}
                     >
-                      <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} alt={m.name} size={28} />
+                      <MemberAvatar
+                        avatar={m.avatar}
+                        bodyKind={m.body.kind}
+                        alt={m.name}
+                        size={28}
+                      />
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 600, fontSize: 12.5 }}>{m.name}</div>
+                        <div style={{ fontWeight: 600, fontSize: 12.5 }}>
+                          {m.name}
+                        </div>
                         <div
                           style={{
                             fontSize: 11,
-                            color: 'var(--sh-muted-fg)',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
+                            color: "var(--sh-muted-fg)",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
                           }}
                         >
                           {m.specialty}
@@ -1646,7 +2023,7 @@ export function FamilyWorkbench({
         onClose={() => setSheetOpen(false)}
         onSaved={(saved) => {
           void refresh();
-          setTarget({ kind: 'member', memberId: saved.id });
+          setTarget({ kind: "member", memberId: saved.id });
         }}
       />
 
@@ -1656,11 +2033,13 @@ export function FamilyWorkbench({
         rooms={scopedRooms}
         members={state.members}
         onClose={() => setPaletteOpen(false)}
-        onSelectGroup={(gId) => setTarget({ kind: 'group', groupId: gId })}
-        onSelectMember={(mId) => setTarget({ kind: 'member', memberId: mId })}
+        onSelectGroup={(gId) => setTarget({ kind: "group", groupId: gId })}
+        onSelectMember={(mId) => setTarget({ kind: "member", memberId: mId })}
         onCreateMember={openCreateSheet}
         onCreateGroup={() => setCreatingGroup(true)}
-        onReprobeBodies={() => void familyClientApi.probeBodies().then(() => refresh())}
+        onReprobeBodies={() =>
+          void familyClientApi.probeBodies().then(() => refresh())
+        }
         onSeedFamily={() => void handleSeedFamily()}
         onBackToMainChat={onBackToConversation}
       />

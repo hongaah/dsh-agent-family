@@ -6,10 +6,10 @@
  * - 全仓严格类型化，禁用 `any`。
  */
 
-export const BODY_KINDS = ['claude', 'codex', 'opencode', 'dsh'] as const;
+export const BODY_KINDS = ["claude", "codex", "opencode", "dsh"] as const;
 export type BodyKind = (typeof BODY_KINDS)[number];
 
-export const PERMISSION_MODES = ['ask', 'auto', 'full_access'] as const;
+export const PERMISSION_MODES = ["ask", "auto", "full_access"] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 export interface BodySpec {
@@ -95,14 +95,14 @@ export interface BodyHealthStatus {
   readonly label: string;
   readonly available: boolean;
   readonly executablePath?: string;
-  readonly mode: 'cli' | 'dsh-native';
+  readonly mode: "cli" | "dsh-native";
   readonly note?: string;
 }
 
 export interface ApprovalOption {
   readonly optionId: string;
   readonly label: string;
-  readonly kind?: 'allow' | 'allow_always' | 'deny';
+  readonly kind?: "allow" | "allow_always" | "deny";
 }
 
 export interface PendingApproval {
@@ -121,25 +121,25 @@ export interface PendingApproval {
 }
 
 export type MemberActivityState =
-  | 'sleeping'
-  | 'idle'
-  | 'working'
-  | 'in_call'
-  | 'awaiting_approval'
-  | 'error';
+  | "sleeping"
+  | "idle"
+  | "working"
+  | "in_call"
+  | "awaiting_approval"
+  | "error";
 
 export type MemberStreamEvent =
-  | { readonly kind: 'text_delta'; readonly delta: string }
-  | { readonly kind: 'status'; readonly summary: string }
+  | { readonly kind: "text_delta"; readonly delta: string }
+  | { readonly kind: "status"; readonly summary: string }
   | {
-      readonly kind: 'approval_requested';
+      readonly kind: "approval_requested";
       readonly requestId: string;
       readonly title: string;
       readonly detail?: string;
       readonly options: readonly ApprovalOption[];
       readonly allowCustomInput?: boolean;
     }
-  | { readonly kind: 'turn_done'; readonly finalText: string };
+  | { readonly kind: "turn_done"; readonly finalText: string };
 
 export interface PhoneMcpLaunchSpec {
   readonly command: string;
@@ -151,7 +151,7 @@ export interface PhoneMcpLaunchSpec {
 
 export interface MemberChatEntry {
   readonly id: string;
-  readonly role: 'human' | 'lead' | 'peer' | 'member' | 'system';
+  readonly role: "human" | "lead" | "peer" | "member" | "system";
   readonly authorName: string;
   readonly content: string;
   readonly statusSummary?: string;
@@ -171,7 +171,7 @@ export interface MemberRuntimeSnapshot {
   readonly lastActiveAt?: string;
 }
 
-export type PhoneCallIntent = 'discuss' | 'request_help' | 'sync';
+export type PhoneCallIntent = "discuss" | "request_help" | "sync";
 
 export interface PhoneCallRecord {
   readonly id: string;
@@ -182,7 +182,12 @@ export interface PhoneCallRecord {
   readonly toMemberName: string;
   readonly intent: PhoneCallIntent;
   readonly message: string;
-  readonly status: 'ringing' | 'completed' | 'busy_rejected' | 'hop_limited' | 'failed';
+  readonly status:
+    | "ringing"
+    | "completed"
+    | "busy_rejected"
+    | "hop_limited"
+    | "failed";
   readonly reply?: string;
   readonly createdAt: string;
   readonly finishedAt?: string;
@@ -215,7 +220,7 @@ export interface FamilyGroupRoom {
   readonly title: string;
   readonly scopeId: string;
   /** `'all_enabled'` 动态涵盖当前所有在岗成员；数组为固定成员子集 */
-  readonly memberIds: 'all_enabled' | readonly string[];
+  readonly memberIds: "all_enabled" | readonly string[];
   readonly messages: readonly GroupMessage[];
   /** 每个成员已投递到的消息下标，用于切片计算「未读群消息增量」 */
   readonly readCursors: Readonly<Record<string, number>>;
@@ -228,14 +233,28 @@ export interface FamilyGroupRoom {
 }
 
 export type FamilyFocusTarget =
-  | { readonly kind: 'group'; readonly groupId: string }
-  | { readonly kind: 'member'; readonly memberId: string };
+  | { readonly kind: "group"; readonly groupId: string }
+  | { readonly kind: "member"; readonly memberId: string };
 
 export type FamilyRealtimeEvent =
-  | { readonly type: 'roster_updated'; readonly members: readonly FamilyMember[] }
-  | { readonly type: 'member_runtime'; readonly snapshot: MemberRuntimeSnapshot }
-  | { readonly type: 'approval_opened'; readonly approval: PendingApproval }
-  | { readonly type: 'approval_closed'; readonly approvalId: string; readonly selectedOptionId?: string }
-  | { readonly type: 'phone_call_updated'; readonly record: PhoneCallRecord }
-  | { readonly type: 'group_updated'; readonly room: FamilyGroupRoom }
-  | { readonly type: 'focus_requested'; readonly scopeId: string; readonly target: FamilyFocusTarget };
+  | {
+      readonly type: "roster_updated";
+      readonly members: readonly FamilyMember[];
+    }
+  | {
+      readonly type: "member_runtime";
+      readonly snapshot: MemberRuntimeSnapshot;
+    }
+  | { readonly type: "approval_opened"; readonly approval: PendingApproval }
+  | {
+      readonly type: "approval_closed";
+      readonly approvalId: string;
+      readonly selectedOptionId?: string;
+    }
+  | { readonly type: "phone_call_updated"; readonly record: PhoneCallRecord }
+  | { readonly type: "group_updated"; readonly room: FamilyGroupRoom }
+  | {
+      readonly type: "focus_requested";
+      readonly scopeId: string;
+      readonly target: FamilyFocusTarget;
+    };
