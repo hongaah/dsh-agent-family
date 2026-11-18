@@ -63,6 +63,7 @@ function requiresProcessRestart(prev: BodySpec, next: BodySpec): boolean {
 
 function hasModelOrEffortDiff(prev: BodySpec, next: BodySpec): boolean {
   return (
+    (prev.permissionMode ?? 'ask') !== (next.permissionMode ?? 'ask') ||
     (prev.model ?? '') !== (next.model ?? '') ||
     (prev.reasoningEffort ?? '') !== (next.reasoningEffort ?? '')
   );
@@ -462,6 +463,7 @@ export class FamilyHub {
               title: ev.title,
               detail: ev.detail,
               options: ev.options,
+              ...(ev.allowCustomInput ? { allowCustomInput: true } : {}),
               createdAt: new Date().toISOString(),
             };
             this.pendingApprovals.set(approvalId, { approval, actor });

@@ -5,10 +5,12 @@ import { join } from 'node:path';
 import { defaultLobeAvatarForBody } from './avatar-utils.ts';
 import {
   BODY_KINDS,
+  PERMISSION_MODES,
   type BodyKind,
   type BodySpec,
   type CreateMemberInput,
   type FamilyMember,
+  type PermissionMode,
   type StarterMemberTemplate,
   type UpdateMemberInput,
 } from './types.ts';
@@ -79,10 +81,17 @@ function isBodyKind(value: unknown): value is BodyKind {
   return typeof value === 'string' && (BODY_KINDS as readonly string[]).includes(value);
 }
 
+function isPermissionMode(value: unknown): value is PermissionMode {
+  return typeof value === 'string' && (PERMISSION_MODES as readonly string[]).includes(value);
+}
+
 function normalizeBodySpec(input: BodySpec): BodySpec {
   if (!isBodyKind(input.kind)) {
     throw new Error(`不支持的身体类型: ${String(input.kind)}`);
   }
+  const permissionMode = isPermissionMode(input.permissionMode)
+    ? input.permissionMode
+    : undefined;
   const model = input.model?.trim();
   const reasoningEffort = input.reasoningEffort?.trim();
   const command = input.command?.trim();
@@ -91,6 +100,7 @@ function normalizeBodySpec(input: BodySpec): BodySpec {
     .filter((arg) => arg.length > 0);
   return {
     kind: input.kind,
+    ...(permissionMode ? { permissionMode } : {}),
     ...(model ? { model } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(command ? { command } : {}),
@@ -143,6 +153,9 @@ function parsePersistedMembers(raw: unknown): FamilyMember[] {
       specialty: candidate.specialty,
       body: normalizeBodySpec({
         kind: bodyRaw.kind,
+        permissionMode: isPermissionMode(bodyRaw.permissionMode)
+          ? bodyRaw.permissionMode
+          : undefined,
         model: typeof bodyRaw.model === 'string' ? bodyRaw.model : undefined,
         reasoningEffort:
           typeof bodyRaw.reasoningEffort === 'string' ? bodyRaw.reasoningEffort : undefined,

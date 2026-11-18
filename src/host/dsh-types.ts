@@ -37,6 +37,15 @@ export interface DshConnectionService {
   }): 401 | 403 | undefined;
 }
 
+export interface DshPermissionPresetsService {
+  readonly names?: readonly string[];
+  set?(session: DshSessionHandle, presetName: string): void;
+}
+
+export interface DshApprovalService {
+  setPolicy?(agent: DshOwnedAgent, policy: 'ask' | 'never'): void;
+}
+
 export interface DshModelSelection {
   readonly provider: string;
   readonly model: string;

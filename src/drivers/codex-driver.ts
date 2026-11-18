@@ -1,5 +1,9 @@
 import { resolveBodyExecutable } from '../core/cli-locator.ts';
-import type { ApprovalOption, MemberStreamEvent } from '../core/types.ts';
+import {
+  decidePermissionAction,
+  extractAskUserPrompt,
+} from '../core/permission-policy.ts';
+import type { ApprovalOption, MemberStreamEvent, PermissionMode } from '../core/types.ts';
 import {
   AsyncEventQueue,
   type AwakenMemberContext,
@@ -17,8 +21,34 @@ const CODEX_APPROVAL_OPTIONS: readonly ApprovalOption[] = [
 
 interface PendingCodexServerRequest {
   readonly id: JsonRpcId;
-  readonly kind: 'decision' | 'elicitation' | 'permissions';
+  readonly kind: 'decision' | 'elicitation' | 'permissions' | 'user_input';
   readonly requestedPermissions?: unknown;
+  readonly questionId?: string;
+}
+
+function buildCodexTurnPermissionOverrides(
+  mode: PermissionMode,
+  hadExplicitOverride: boolean
+): Record<string, unknown> {
+  if (mode === 'full_access') {
+    return {
+      approvalPolicy: 'never',
+      sandboxPolicy: { type: 'dangerFullAccess' },
+    };
+  }
+  if (mode === 'auto') {
+    return {
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'auto_review',
+    };
+  }
+  if (hadExplicitOverride) {
+    return {
+      approvalPolicy: 'untrusted',
+      approvalsReviewer: 'user',
+    };
+  }
+  return {};
 }
 
 export class CodexDriver implements BodyDriver {
@@ -36,6 +66,8 @@ export class CodexDriver implements BodyDriver {
     let accumulatedText = '';
     let currentModel = context.member.body.model?.trim() || undefined;
     let currentEffort = context.member.body.reasoningEffort?.trim() || undefined;
+    let currentPermissionMode: PermissionMode = context.member.body.permissionMode ?? 'ask';
+    let hadExplicitPermissionOverride = currentPermissionMode !== 'ask';
     const pendingServerRequests = new Map<string, PendingCodexServerRequest>();
 
     const args: string[] = ['app-server', '--stdio', ...(context.member.body.extraArgs ?? [])];
@@ -91,11 +123,29 @@ export class CodexDriver implements BodyDriver {
       onServerRequest: ({ id, method, params }) => {
         const requestKey = String(id);
 
+        // 0. Codex 向人类主动提问 (item/tool/requestUserInput) —— 在全部三种模式下均必须询问人类！
+        if (method === 'item/tool/requestUserInput') {
+          const askSpec = extractAskUserPrompt(params);
+          pendingServerRequests.set(requestKey, {
+            id,
+            kind: 'user_input',
+            questionId: askSpec.questionId,
+          });
+          activeQueue?.push({
+            kind: 'approval_requested',
+            requestId: requestKey,
+            title: `💬 向你提问: ${askSpec.questionText}`,
+            detail: askSpec.detailText,
+            options: askSpec.options,
+            allowCustomInput: true,
+          });
+          return;
+        }
+
         // 1. Codex 0.167+ MCP 工具问询 (mcpServer/elicitation/request)
         if (method === 'mcpServer/elicitation/request') {
           const serverName = typeof params.serverName === 'string' ? params.serverName : '';
-          // 成员使用自身挂载的「家庭手机」属于随身本能通信能力，自动会话级放行，避免卡住等待人工确认
-          if (serverName === 'family_phone') {
+          if (serverName === 'family_phone' || currentPermissionMode !== 'ask') {
             peer.respond(id, {
               action: 'accept',
               content: {},
@@ -130,7 +180,6 @@ export class CodexDriver implements BodyDriver {
           method === 'execCommandApproval' ||
           method === 'applyPatchApproval'
         ) {
-          pendingServerRequests.set(requestKey, { id, kind: 'decision' });
           const cmdLabel =
             typeof params.command === 'string'
               ? params.command
@@ -139,10 +188,25 @@ export class CodexDriver implements BodyDriver {
                 : method.includes('fileChange') || method.includes('Patch')
                   ? '修改工作区文件'
                   : method;
+
+          const verdict = decidePermissionAction(currentPermissionMode, {
+            toolName: method,
+            commandText: cmdLabel,
+            rawInput: params,
+          });
+          if (verdict.decision === 'auto_allow') {
+            peer.respond(id, { decision: 'accept' });
+            return;
+          }
+
+          pendingServerRequests.set(requestKey, { id, kind: 'decision' });
+          const prefix = verdict.isDangerous
+            ? `⚠️ 高危操作确认 (${verdict.reason ?? cmdLabel.slice(0, 60)})`
+            : `Codex 请求确认: ${cmdLabel.slice(0, 120)}`;
           activeQueue?.push({
             kind: 'approval_requested',
             requestId: requestKey,
-            title: `Codex 请求确认: ${cmdLabel.slice(0, 120)}`,
+            title: prefix,
             detail: JSON.stringify(params, null, 2).slice(0, 800),
             options: CODEX_APPROVAL_OPTIONS,
           });
@@ -151,12 +215,23 @@ export class CodexDriver implements BodyDriver {
 
         // 3. Codex 额外文件系统/网络沙箱权限申请
         if (method === 'item/permissions/requestApproval') {
+          if (currentPermissionMode === 'full_access') {
+            peer.respond(id, {
+              permissions:
+                params.permissions && typeof params.permissions === 'object'
+                  ? params.permissions
+                  : {},
+              scope: 'session',
+            });
+            return;
+          }
           pendingServerRequests.set(requestKey, {
             id,
             kind: 'permissions',
             requestedPermissions: params.permissions,
           });
-          const reason = typeof params.reason === 'string' && params.reason ? params.reason : '扩展沙箱访问权限';
+          const reason =
+            typeof params.reason === 'string' && params.reason ? params.reason : '扩展沙箱访问权限';
           activeQueue?.push({
             kind: 'approval_requested',
             requestId: requestKey,
@@ -167,7 +242,6 @@ export class CodexDriver implements BodyDriver {
           return;
         }
 
-        // 其他非人工审批类内部回调默认返回空确认以防阻塞
         peer.respond(id, {});
       },
       onExit: (err) => {
@@ -194,12 +268,20 @@ export class CodexDriver implements BodyDriver {
       );
       peer.notify('initialized', {});
 
+      const threadPermissionFields =
+        currentPermissionMode === 'full_access'
+          ? { sandbox: 'danger-full-access', approvalPolicy: 'never' }
+          : currentPermissionMode === 'auto'
+            ? { sandbox: 'workspace-write', approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' }
+            : {};
+
       const threadStartRes = await peer.request(
         'thread/start',
         {
           cwd: context.cwd,
           developerInstructions: context.composedSoul,
           ...(currentModel ? { model: currentModel } : {}),
+          ...threadPermissionFields,
           config: {
             mcp_servers: {
               family_phone: {
@@ -230,10 +312,14 @@ export class CodexDriver implements BodyDriver {
         reconfigure: async (nextBody): Promise<boolean> => {
           const nextModel = nextBody.model?.trim() || undefined;
           const nextEffort = nextBody.reasoningEffort?.trim() || undefined;
-          // 若从已指定覆盖切回「跟随默认」，需重开 thread 才能还原 CLI 默认值
+          const nextPerm: PermissionMode = nextBody.permissionMode ?? 'ask';
           if ((currentModel && !nextModel) || (currentEffort && !nextEffort)) {
             return false;
           }
+          if (nextPerm !== 'ask') {
+            hadExplicitPermissionOverride = true;
+          }
+          currentPermissionMode = nextPerm;
           currentModel = nextModel;
           currentEffort = nextEffort;
           return true;
@@ -255,6 +341,11 @@ export class CodexDriver implements BodyDriver {
           };
           signal.addEventListener('abort', onAbort, { once: true });
 
+          const turnPermOverrides = buildCodexTurnPermissionOverrides(
+            currentPermissionMode,
+            hadExplicitPermissionOverride
+          );
+
           void peer
             .request(
               'turn/start',
@@ -262,6 +353,7 @@ export class CodexDriver implements BodyDriver {
                 threadId,
                 ...(currentModel ? { model: currentModel } : {}),
                 ...(currentEffort ? { effort: currentEffort } : {}),
+                ...turnPermOverrides,
                 input: [
                   {
                     type: 'text',
@@ -286,6 +378,21 @@ export class CodexDriver implements BodyDriver {
           if (!pending) return;
           pendingServerRequests.delete(requestId);
 
+          if (pending.kind === 'user_input') {
+            const answerVal = optionId.startsWith('answer:')
+              ? optionId.slice('answer:'.length)
+              : optionId;
+            const qId = pending.questionId ?? 'default';
+            peer.respond(pending.id, {
+              answers: {
+                [qId]: {
+                  answers: optionId === 'deny' ? [] : [answerVal],
+                },
+              },
+            });
+            return;
+          }
+
           if (pending.kind === 'elicitation') {
             if (optionId === 'acceptForSession') {
               peer.respond(pending.id, {
@@ -306,9 +413,10 @@ export class CodexDriver implements BodyDriver {
           if (pending.kind === 'permissions') {
             const granted = optionId === 'accept' || optionId === 'acceptForSession';
             peer.respond(pending.id, {
-              permissions: granted && pending.requestedPermissions && typeof pending.requestedPermissions === 'object'
-                ? pending.requestedPermissions
-                : {},
+              permissions:
+                granted && pending.requestedPermissions && typeof pending.requestedPermissions === 'object'
+                  ? pending.requestedPermissions
+                  : {},
               scope: optionId === 'acceptForSession' ? 'session' : 'turn',
             });
             return;

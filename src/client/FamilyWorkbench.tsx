@@ -31,6 +31,7 @@ import {
   formatShortModelBadge,
   GroupMembersModelPopover,
   MemberModelQuickPopover,
+  MemberPermissionQuickPopover,
 } from './ModelQuickPopover.tsx';
 import { RichMessageContent } from './RichMessageContent.tsx';
 import { SmartComposer } from './SmartComposer.tsx';
@@ -1198,6 +1199,10 @@ export function FamilyWorkbench({
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  <MemberPermissionQuickPopover
+                    member={activeMember}
+                    onUpdated={() => void refresh()}
+                  />
                   <MemberModelQuickPopover
                     member={activeMember}
                     onUpdated={() => void refresh()}

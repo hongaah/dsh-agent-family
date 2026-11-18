@@ -1,5 +1,6 @@
 import { resolveBodyExecutable } from '../core/cli-locator.ts';
-import type { ApprovalOption, MemberStreamEvent } from '../core/types.ts';
+import { decidePermissionAction } from '../core/permission-policy.ts';
+import type { ApprovalOption, MemberStreamEvent, PermissionMode } from '../core/types.ts';
 import {
   AsyncEventQueue,
   type AwakenMemberContext,
@@ -22,6 +23,7 @@ export class OpenCodeDriver implements BodyDriver {
     let activeQueue: AsyncEventQueue<MemberStreamEvent> | null = null;
     let accumulatedText = '';
     let soulDelivered = false;
+    let activePermissionMode: PermissionMode = context.member.body.permissionMode ?? 'ask';
     const pendingPermissions = new Map<string, JsonRpcId>();
 
     const args: string[] = ['acp', ...(context.member.body.extraArgs ?? [])];
@@ -81,14 +83,22 @@ export class OpenCodeDriver implements BodyDriver {
             });
           }
 
-          // 成员调用自身挂载的「家庭手机」工具默认直接放行，避免阻塞跨成员协作
+          // 1) 家庭手机工具始终放行；2) 根据成员当前的权限模式 (ask / auto / full_access) 决策是否自动放行
           const serializedToolCall = JSON.stringify(toolCall);
-          if (
+          const isPhoneTool =
             serializedToolCall.includes('family_phone') ||
             serializedToolCall.includes('phone_contacts') ||
             serializedToolCall.includes('phone_call') ||
-            serializedToolCall.includes('phone_group_discuss')
-          ) {
+            serializedToolCall.includes('phone_group_discuss') ||
+            serializedToolCall.includes('phone_read_dsh_session');
+
+          const verdict = decidePermissionAction(activePermissionMode, {
+            toolName: title,
+            commandText: serializedToolCall,
+            rawInput: toolCall,
+          });
+
+          if (isPhoneTool || verdict.decision === 'auto_allow') {
             const allowOpt =
               options.find((o) => o.kind === 'allow_always') ??
               options.find((o) => o.kind === 'allow');
@@ -106,7 +116,7 @@ export class OpenCodeDriver implements BodyDriver {
           activeQueue?.push({
             kind: 'approval_requested',
             requestId: requestKey,
-            title,
+            title: verdict.isDangerous ? `⚠️ 高危操作确认: ${title}` : title,
             detail: JSON.stringify(toolCall, null, 2).slice(0, 800),
             options:
               options.length > 0
@@ -115,6 +125,7 @@ export class OpenCodeDriver implements BodyDriver {
                     { optionId: 'allow', label: '允许', kind: 'allow' },
                     { optionId: 'reject', label: '拒绝', kind: 'deny' },
                   ],
+            ...(verdict.isAskUser ? { allowCustomInput: true } : {}),
           });
           return;
         }
@@ -181,6 +192,7 @@ export class OpenCodeDriver implements BodyDriver {
         bodyKind: 'opencode',
         isAlive: () => peer.isAlive(),
         reconfigure: async (nextBody): Promise<boolean> => {
+          activePermissionMode = nextBody.permissionMode ?? 'ask';
           const nextModel = nextBody.model?.trim() ?? '';
           if (activeModel && !nextModel) {
             return false;

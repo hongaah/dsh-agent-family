@@ -1,7 +1,23 @@
-import { Check, ChevronDown, Cpu, RefreshCw, Search, Zap } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  Cpu,
+  RefreshCw,
+  Search,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
+  Zap,
+} from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { BodyKind, BodyModelCatalog, FamilyMember } from '../core/types.ts';
+import { PERMISSION_MODE_METAS } from '../core/permission-policy.ts';
+import type {
+  BodyKind,
+  BodyModelCatalog,
+  FamilyMember,
+  PermissionMode,
+} from '../core/types.ts';
 import { familyClientApi } from './api.ts';
 import { MemberAvatar } from './MemberAvatar.tsx';
 
@@ -106,6 +122,7 @@ function MemberModelConfigBody({
 
   const currentModel = member.body.model ?? '';
   const currentEffort = member.body.reasoningEffort ?? '';
+  const currentPerm: PermissionMode = member.body.permissionMode ?? 'ask';
 
   const availableEfforts = useMemo(() => {
     if (catalog && !catalog.supportsEffort) return [];
@@ -129,12 +146,17 @@ function MemberModelConfigBody({
     return (catalog?.models ?? []).some((m) => m.id === q);
   }, [catalog, query]);
 
-  const applyPatch = async (nextModel: string | undefined, nextEffort: string | undefined) => {
+  const applyPatch = async (
+    nextModel: string | undefined,
+    nextEffort: string | undefined,
+    nextPermission: PermissionMode = currentPerm
+  ) => {
     setSaving(true);
     try {
       await familyClientApi.updateMember(member.id, {
         body: {
           ...member.body,
+          permissionMode: nextPermission,
           model: nextModel?.trim() || undefined,
           reasoningEffort: nextEffort?.trim() || undefined,
         },
@@ -147,6 +169,61 @@ function MemberModelConfigBody({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {/* 权限自主模式（每次询问 / 自动模式 / 完全访问） */}
+      <div>
+        <div
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            color: 'var(--sh-muted-fg)',
+            marginBottom: 5,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <span>执行权限模式</span>
+          {saving && <span style={{ fontSize: 10.5 }}>同步中…</span>}
+        </div>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: 4,
+            padding: 3,
+            borderRadius: 7,
+            background: 'var(--sh-muted)',
+          }}
+        >
+          {PERMISSION_MODE_METAS.map((pm) => {
+            const selected = currentPerm === pm.value;
+            return (
+              <button
+                key={pm.value}
+                type="button"
+                title={pm.description}
+                disabled={saving}
+                onClick={() => void applyPatch(currentModel, currentEffort, pm.value)}
+                style={{
+                  height: 26,
+                  border: 'none',
+                  borderRadius: 5,
+                  fontSize: 11,
+                  fontWeight: selected ? 600 : 500,
+                  cursor: 'pointer',
+                  background: selected ? 'var(--sh-card)' : 'transparent',
+                  color: selected ? 'var(--sh-fg)' : 'var(--sh-muted-fg)',
+                  boxShadow: selected ? 'var(--sh-shadow-sm)' : 'none',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {pm.shortLabel}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* 思考快慢档位一键切换 */}
       {availableEfforts.length > 1 && (
         <div>
@@ -489,12 +566,12 @@ export function GroupMembersModelPopover({
       <button
         type="button"
         className="sh-btn sh-btn-outline sh-btn-sm"
-        title="在群里直接给任意成员切换更快的模型或思考档位"
+        title="在群里直接给任意成员切换权限模式（询问/自动/完全访问）、模型与思考快慢"
         onClick={() => setOpen((v) => !v)}
         style={{ height: 28, gap: 5 }}
       >
         <Zap size={12} />
-        <span>模型与快慢</span>
+        <span>模型与权限</span>
         <ChevronDown size={11} style={{ opacity: 0.65 }} />
       </button>
 
@@ -550,6 +627,148 @@ export function GroupMembersModelPopover({
           </div>
 
           <MemberModelConfigBody member={currentMember} active={open} onUpdated={onUpdated} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function PermissionModeIcon({
+  mode,
+  size = 12,
+}: {
+  readonly mode: PermissionMode | undefined;
+  readonly size?: number;
+}): React.ReactElement {
+  if (mode === 'full_access') {
+    return <ShieldAlert size={size} style={{ color: '#f59e0b' }} />;
+  }
+  if (mode === 'auto') {
+    return <ShieldCheck size={size} style={{ color: '#10b981' }} />;
+  }
+  return <Shield size={size} />;
+}
+
+export function MemberPermissionQuickPopover({
+  member,
+  onUpdated,
+}: {
+  readonly member: FamilyMember;
+  readonly onUpdated: () => void;
+}): React.ReactElement {
+  const [open, setOpen] = useState<boolean>(false);
+  const [saving, setSaving] = useState<boolean>(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const currentMode: PermissionMode = member.body.permissionMode ?? 'ask';
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (ev: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(ev.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const currentMeta =
+    PERMISSION_MODE_METAS.find((m) => m.value === currentMode) ?? PERMISSION_MODE_METAS[0]!;
+
+  const selectMode = async (next: PermissionMode) => {
+    setSaving(true);
+    try {
+      await familyClientApi.updateMember(member.id, {
+        body: {
+          ...member.body,
+          permissionMode: next,
+        },
+      });
+      setOpen(false);
+      onUpdated();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        className="sh-btn sh-btn-outline sh-btn-sm"
+        title={`当前权限模式：${currentMeta.label} — ${currentMeta.description}`}
+        onClick={() => setOpen((v) => !v)}
+        style={{ height: 26, padding: '0 8px', fontSize: 11.5, gap: 5 }}
+      >
+        <PermissionModeIcon mode={currentMode} size={12} />
+        <span>{currentMeta.shortLabel}</span>
+        <ChevronDown size={11} style={{ opacity: 0.65 }} />
+      </button>
+
+      {open && (
+        <div
+          role="dialog"
+          aria-label="切换成员权限模式"
+          style={{
+            position: 'absolute',
+            right: 0,
+            top: 'calc(100% + 6px)',
+            width: 296,
+            padding: 6,
+            borderRadius: 10,
+            border: '1px solid var(--sh-border)',
+            background: 'var(--sh-popover)',
+            color: 'var(--sh-popover-fg)',
+            boxShadow: 'var(--sh-shadow-lg)',
+            zIndex: 50,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+          }}
+        >
+          {PERMISSION_MODE_METAS.map((pm) => {
+            const active = pm.value === currentMode;
+            return (
+              <button
+                key={pm.value}
+                type="button"
+                disabled={saving}
+                className="sh-menu-item"
+                data-highlighted={String(active)}
+                onClick={() => void selectMode(pm.value)}
+                style={{
+                  alignItems: 'flex-start',
+                  padding: '8px 9px',
+                  gap: 8,
+                }}
+              >
+                <div style={{ marginTop: 2 }}>
+                  <PermissionModeIcon mode={pm.value} size={14} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                  <div style={{ fontSize: 12.5, fontWeight: active ? 600 : 500 }}>{pm.label}</div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: 'var(--sh-muted-fg)',
+                      lineHeight: 1.45,
+                      marginTop: 2,
+                    }}
+                  >
+                    {pm.description}
+                  </div>
+                </div>
+                {active && <Check size={13} style={{ marginTop: 2, flexShrink: 0 }} />}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

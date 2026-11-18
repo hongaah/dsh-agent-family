@@ -2,11 +2,13 @@ import { ChevronDown, ChevronRight, RefreshCw, RotateCcw, Search, Upload, X } fr
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import { defaultLobeAvatarForBody } from '../core/avatar-spec.ts';
+import { PERMISSION_MODE_METAS } from '../core/permission-policy.ts';
 import {
   BODY_KINDS,
   type BodyHealthStatus,
   type BodyKind,
   type FamilyMember,
+  type PermissionMode,
   type StarterMemberTemplate,
 } from '../core/types.ts';
 import { familyClientApi } from './api.ts';
@@ -16,7 +18,7 @@ import {
   MemberAvatar,
   prepareUploadedPhotoDataUrl,
 } from './MemberAvatar.tsx';
-import { EFFORT_PRESETS, useBodyModelCatalog } from './ModelQuickPopover.tsx';
+import { EFFORT_PRESETS, PermissionModeIcon, useBodyModelCatalog } from './ModelQuickPopover.tsx';
 
 export interface MemberSheetProps {
   readonly open: boolean;
@@ -46,6 +48,7 @@ export function MemberSheet({
   const [avatarManuallyChosen, setAvatarManuallyChosen] = useState<boolean>(false);
   const [formSpecialty, setFormSpecialty] = useState<string>('');
   const [formBodyKind, setFormBodyKind] = useState<BodyKind>('claude');
+  const [formPermissionMode, setFormPermissionMode] = useState<PermissionMode>('auto');
   const [formModel, setFormModel] = useState<string>('');
   const [formEffort, setFormEffort] = useState<string>('');
   const [formCommand, setFormCommand] = useState<string>('');
@@ -73,6 +76,7 @@ export function MemberSheet({
       setAvatarManuallyChosen(true);
       setFormSpecialty(editingMember.specialty);
       setFormBodyKind(editingMember.body.kind);
+      setFormPermissionMode(editingMember.body.permissionMode ?? 'ask');
       setFormModel(editingMember.body.model ?? '');
       setFormEffort(editingMember.body.reasoningEffort ?? '');
       setFormCommand(editingMember.body.command ?? '');
@@ -85,6 +89,7 @@ export function MemberSheet({
       setFormId('');
       setFormName('');
       setFormBodyKind(firstAvailableBody);
+      setFormPermissionMode('auto');
       setFormModel('');
       setFormEffort('');
       setFormAvatar(defaultLobeAvatarForBody(firstAvailableBody));
@@ -151,6 +156,7 @@ export function MemberSheet({
       .filter(Boolean);
     const bodySpec = {
       kind: formBodyKind,
+      permissionMode: formPermissionMode,
       ...(formModel.trim() ? { model: formModel.trim() } : {}),
       ...(formEffort.trim() ? { reasoningEffort: formEffort.trim() } : {}),
       ...(formCommand.trim() ? { command: formCommand.trim() } : {}),
@@ -452,6 +458,44 @@ export function MemberSheet({
                       />
                     </div>
                     <span style={{ fontSize: 12, fontWeight: 600 }}>{kind}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 执行权限模式卡片（每次询问 / 自动模式 / 完全访问） */}
+          <div>
+            <label className="sh-label">执行权限模式</label>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+              {PERMISSION_MODE_METAS.map((pm) => {
+                const selected = formPermissionMode === pm.value;
+                return (
+                  <button
+                    key={pm.value}
+                    type="button"
+                    onClick={() => setFormPermissionMode(pm.value)}
+                    style={{
+                      padding: '9px 10px',
+                      borderRadius: 8,
+                      border: `1px solid ${selected ? 'var(--sh-fg)' : 'var(--sh-border)'}`,
+                      background: selected ? 'var(--sh-accent)' : 'transparent',
+                      color: 'inherit',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'flex-start',
+                      gap: 4,
+                      textAlign: 'left',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600 }}>
+                      <PermissionModeIcon mode={pm.value} size={13} />
+                      <span>{pm.shortLabel}</span>
+                    </div>
+                    <span style={{ fontSize: 10.5, color: 'var(--sh-muted-fg)', lineHeight: 1.4 }}>
+                      {pm.description}
+                    </span>
                   </button>
                 );
               })}

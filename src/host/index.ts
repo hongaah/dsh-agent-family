@@ -43,6 +43,8 @@ import type {
   DshLlmService,
   DshModelSelection,
   DshOwnedAgentHandle,
+  DshPermissionPresetsService,
+  DshApprovalService,
   DshPreStepDecision,
   DshPreStepMessage,
   DshPreStepPayload,
@@ -180,6 +182,12 @@ function parseBodySpecFromPayload(raw: unknown): BodySpec | undefined {
   if (kind !== 'claude' && kind !== 'codex' && kind !== 'opencode' && kind !== 'dsh') {
     return undefined;
   }
+  const permissionMode =
+    obj.permissionMode === 'ask' ||
+    obj.permissionMode === 'auto' ||
+    obj.permissionMode === 'full_access'
+      ? obj.permissionMode
+      : undefined;
   const model = typeof obj.model === 'string' ? obj.model : undefined;
   const reasoningEffort =
     typeof obj.reasoningEffort === 'string' ? obj.reasoningEffort : undefined;
@@ -189,6 +197,7 @@ function parseBodySpecFromPayload(raw: unknown): BodySpec | undefined {
     : undefined;
   return {
     kind,
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(command !== undefined ? { command } : {}),
@@ -448,6 +457,29 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
           }
 
           const ownedAgent = handle.agent;
+          // 同步成员当前的权限自主模式到 DSH 原生会话（ask / auto / full_access）
+          try {
+            const presetsSvc = ctx.get('permissionPresets') as
+              | DshPermissionPresetsService
+              | undefined;
+            const approvalSvc = ctx.get('approval') as DshApprovalService | undefined;
+            const permMode = member.body.permissionMode ?? 'ask';
+            if (presetsSvc?.set) {
+              const available = presetsSvc.names ?? [];
+              if (permMode === 'full_access' && available.includes('danger-full-access')) {
+                presetsSvc.set(ownedAgent.session, 'danger-full-access');
+              } else if (permMode === 'auto' && available.includes('auto')) {
+                presetsSvc.set(ownedAgent.session, 'auto');
+              } else if (available.includes('workspace-write')) {
+                presetsSvc.set(ownedAgent.session, 'workspace-write');
+              }
+            }
+            if (approvalSvc?.setPolicy) {
+              approvalSvc.setPolicy(ownedAgent, permMode === 'full_access' ? 'never' : 'ask');
+            }
+          } catch {
+            // 测试环境未挂载宿主沙箱/审批预设服务时静默跳过
+          }
           const startSeq = ownedAgent.session.seq ?? 0;
 
           return new Promise<string>((resolveTurn, rejectTurn) => {

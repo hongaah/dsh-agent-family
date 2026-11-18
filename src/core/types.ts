@@ -9,8 +9,13 @@
 export const BODY_KINDS = ['claude', 'codex', 'opencode', 'dsh'] as const;
 export type BodyKind = (typeof BODY_KINDS)[number];
 
+export const PERMISSION_MODES = ['ask', 'auto', 'full_access'] as const;
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
+
 export interface BodySpec {
   readonly kind: BodyKind;
+  /** 权限自主模式：ask(每次询问) / auto(自动模式，仅危险操作与 AskUser 询问) / full_access(完全访问，仅 AskUser 询问) */
+  readonly permissionMode?: PermissionMode;
   /** 可选模型标识覆盖；留空或省略表示跟随该 CLI 自身默认配置 */
   readonly model?: string;
   /** 可选推理强度/思考快慢覆盖（如 low 秒回、medium 均衡、high 深度、xhigh 满血）；省略表示跟随 CLI 默认 */
@@ -111,6 +116,7 @@ export interface PendingApproval {
   readonly title: string;
   readonly detail?: string;
   readonly options: readonly ApprovalOption[];
+  readonly allowCustomInput?: boolean;
   readonly createdAt: string;
 }
 
@@ -131,6 +137,7 @@ export type MemberStreamEvent =
       readonly title: string;
       readonly detail?: string;
       readonly options: readonly ApprovalOption[];
+      readonly allowCustomInput?: boolean;
     }
   | { readonly kind: 'turn_done'; readonly finalText: string };
 

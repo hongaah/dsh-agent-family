@@ -1,5 +1,9 @@
 import { resolveBodyExecutable } from '../core/cli-locator.ts';
-import type { MemberStreamEvent } from '../core/types.ts';
+import {
+  decidePermissionAction,
+  extractAskUserPrompt,
+} from '../core/permission-policy.ts';
+import type { MemberStreamEvent, PermissionMode } from '../core/types.ts';
 import {
   AsyncEventQueue,
   type AwakenMemberContext,
@@ -10,6 +14,8 @@ import { ManagedNdjsonProcess } from './json-rpc-peer.ts';
 
 interface PendingClaudeControl {
   readonly toolInput: Record<string, unknown>;
+  readonly isAskUser: boolean;
+  readonly questionKey?: string;
 }
 
 export class ClaudeDriver implements BodyDriver {
@@ -36,6 +42,7 @@ export class ClaudeDriver implements BodyDriver {
     });
 
     let activeModel = context.member.body.model?.trim() ?? '';
+    let activePermissionMode: PermissionMode = context.member.body.permissionMode ?? 'ask';
     const activeEffort = context.member.body.reasoningEffort?.trim() ?? '';
 
     const args: string[] = [
@@ -125,11 +132,56 @@ export class ClaudeDriver implements BodyDriver {
               req.input && typeof req.input === 'object' && !Array.isArray(req.input)
                 ? (req.input as Record<string, unknown>)
                 : {};
-            pendingControls.set(requestId, { toolInput });
+            const commandText = typeof toolInput.command === 'string' ? toolInput.command : '';
+
+            const verdict = decidePermissionAction(activePermissionMode, {
+              toolName,
+              commandText,
+              rawInput: toolInput,
+            });
+
+            // 在自动模式 (auto) 或完全访问 (full_access) 下，非拦截项毫秒级自动放行，零弹窗打断
+            if (verdict.decision === 'auto_allow') {
+              proc.writeJsonLine({
+                type: 'control_response',
+                response: {
+                  subtype: 'success',
+                  request_id: requestId,
+                  response: {
+                    behavior: 'allow',
+                    updatedInput: toolInput,
+                  },
+                },
+              });
+              return;
+            }
+
+            if (verdict.isAskUser) {
+              const askPrompt = extractAskUserPrompt(toolInput);
+              pendingControls.set(requestId, {
+                toolInput,
+                isAskUser: true,
+                questionKey: askPrompt.questionText,
+              });
+              activeQueue.push({
+                kind: 'approval_requested',
+                requestId,
+                title: `💬 向你提问: ${askPrompt.questionText}`,
+                detail: askPrompt.detailText,
+                options: askPrompt.options,
+                allowCustomInput: true,
+              });
+              return;
+            }
+
+            pendingControls.set(requestId, { toolInput, isAskUser: false });
+            const titlePrefix = verdict.isDangerous
+              ? `⚠️ 高危操作确认: ${toolName} (${verdict.reason ?? '高风险'})`
+              : `请求执行 ${toolName}`;
             activeQueue.push({
               kind: 'approval_requested',
               requestId,
-              title: `请求执行 ${toolName}`,
+              title: titlePrefix,
               detail: JSON.stringify(toolInput, null, 2).slice(0, 800),
               options: [
                 { optionId: 'allow', label: '允许执行', kind: 'allow' },
@@ -170,9 +222,9 @@ export class ClaudeDriver implements BodyDriver {
       bodyKind: 'claude',
       isAlive: () => proc.isAlive(),
       reconfigure: async (nextBody): Promise<boolean> => {
+        activePermissionMode = nextBody.permissionMode ?? 'ask';
         const nextEffort = nextBody.reasoningEffort?.trim() ?? '';
         const nextModel = nextBody.model?.trim() ?? '';
-        // effort 在 Claude CLI 中为启动级参数，变更时交由 FamilyHub 在空闲时重启进程生效
         if (nextEffort !== activeEffort) {
           return false;
         }
@@ -236,6 +288,46 @@ export class ClaudeDriver implements BodyDriver {
       replyApproval: async (requestId: string, optionId: string): Promise<void> => {
         const pending = pendingControls.get(requestId);
         pendingControls.delete(requestId);
+
+        if (pending?.isAskUser) {
+          if (optionId === 'deny') {
+            proc.writeJsonLine({
+              type: 'control_response',
+              response: {
+                subtype: 'success',
+                request_id: requestId,
+                response: { behavior: 'deny', message: '用户取消了本次提问。' },
+              },
+            });
+            return;
+          }
+          const answerValue = optionId.startsWith('answer:')
+            ? optionId.slice('answer:'.length)
+            : optionId;
+          const prevAnswers =
+            pending.toolInput.answers && typeof pending.toolInput.answers === 'object'
+              ? (pending.toolInput.answers as Record<string, unknown>)
+              : {};
+          proc.writeJsonLine({
+            type: 'control_response',
+            response: {
+              subtype: 'success',
+              request_id: requestId,
+              response: {
+                behavior: 'allow',
+                updatedInput: {
+                  ...pending.toolInput,
+                  answers: {
+                    ...prevAnswers,
+                    [pending.questionKey ?? 'answer']: answerValue,
+                  },
+                },
+              },
+            },
+          });
+          return;
+        }
+
         const allow = optionId === 'allow';
         proc.writeJsonLine({
           type: 'control_response',
