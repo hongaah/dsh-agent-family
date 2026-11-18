@@ -86,12 +86,26 @@ export class GroupChatEngine {
   }
 
   public listRooms(scopeId: string): readonly FamilyGroupRoom[] {
-    this.ensureMainRoom(scopeId);
+    if (!scopeId.startsWith('family-')) {
+      this.ensureMainRoom(scopeId);
+    }
     const list: FamilyGroupRoom[] = [];
     for (const room of this.rooms.values()) {
       if (room.scopeId === scopeId) {
         list.push(this.toImmutable(room));
       }
+    }
+    return list;
+  }
+
+  public listAllRooms(ensureScopeId?: string): readonly FamilyGroupRoom[] {
+    if (ensureScopeId && !ensureScopeId.startsWith('family-')) {
+      this.ensureMainRoom(ensureScopeId);
+    }
+    const list: FamilyGroupRoom[] = [];
+    for (const room of this.rooms.values()) {
+      if (room.scopeId.startsWith('family-')) continue;
+      list.push(this.toImmutable(room));
     }
     return list;
   }

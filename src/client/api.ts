@@ -40,6 +40,106 @@ export function createEmptyBootstrapState(): FamilyBootstrapState {
   };
 }
 
+export interface SessionFamilyActivitySummary {
+  readonly kind: 'approval' | 'active' | 'unread' | 'idle';
+  readonly shortLabel: string;
+  readonly detailLabel: string;
+  readonly totalUnread: number;
+  readonly approvalCount: number;
+}
+
+export function deriveSessionFamilyActivity(
+  state: FamilyBootstrapState,
+  sessionId: string
+): SessionFamilyActivitySummary {
+  if (!sessionId || sessionId.startsWith('family-')) {
+    return {
+      kind: 'idle',
+      shortLabel: '',
+      detailLabel: '',
+      totalUnread: 0,
+      approvalCount: 0,
+    };
+  }
+
+  const scopedApprovals = state.pendingApprovals.filter((a) => a.scopeId === sessionId);
+  const rooms = state.rooms.filter((r) => r.scopeId === sessionId);
+  const snaps = state.snapshots.filter((s) => s.scopeId === sessionId);
+
+  const unreadRooms = rooms.reduce((sum, r) => sum + (r.unreadCount ?? 0), 0);
+  const unreadMembers = snaps.reduce((sum, s) => sum + (s.unreadCount ?? 0), 0);
+  const totalUnread = unreadRooms + unreadMembers;
+
+  if (scopedApprovals.length > 0) {
+    const first = scopedApprovals[0]!;
+    const isAsk = Boolean(first.allowCustomInput);
+    return {
+      kind: 'approval',
+      shortLabel: isAsk ? `${first.memberName}提问` : '待批示',
+      detailLabel: isAsk
+        ? `${first.memberName} 正在等待你的回答`
+        : `${first.memberName} 请求执行批示 (${scopedApprovals.length})`,
+      totalUnread,
+      approvalCount: scopedApprovals.length,
+    };
+  }
+
+  const runningRoom = rooms.find((r) => r.running);
+  if (runningRoom) {
+    const speakerName = runningRoom.activeSpeakerId
+      ? state.members.find((m) => m.id === runningRoom.activeSpeakerId)?.name ??
+        runningRoom.streamingDraft?.senderName ??
+        runningRoom.activeSpeakerId
+      : runningRoom.streamingDraft?.senderName ?? '';
+    const shortLabel = speakerName ? `${speakerName}发言中` : '群聊进行中';
+    return {
+      kind: 'active',
+      shortLabel,
+      detailLabel: speakerName
+        ? `${speakerName} 正在「${runningRoom.title.replace(/^🏠\s*/u, '')}」发言…`
+        : `「${runningRoom.title.replace(/^🏠\s*/u, '')}」正在讨论…`,
+      totalUnread,
+      approvalCount: 0,
+    };
+  }
+
+  const activeSnap = snaps.find(
+    (s) => s.state === 'working' || s.state === 'in_call' || s.state === 'awaiting_approval'
+  );
+  if (activeSnap) {
+    const memberName =
+      state.members.find((m) => m.id === activeSnap.memberId)?.name ?? activeSnap.memberId;
+    const actionWord = activeSnap.state === 'in_call' ? '通话中' : '执行中';
+    return {
+      kind: 'active',
+      shortLabel: `${memberName}${actionWord}`,
+      detailLabel: activeSnap.statusText
+        ? `${memberName}：${activeSnap.statusText}`
+        : `${memberName} 正在${actionWord}…`,
+      totalUnread,
+      approvalCount: 0,
+    };
+  }
+
+  if (totalUnread > 0) {
+    return {
+      kind: 'unread',
+      shortLabel: `${totalUnread} 未读`,
+      detailLabel: `智能体家庭有 ${totalUnread} 条未读新消息`,
+      totalUnread,
+      approvalCount: 0,
+    };
+  }
+
+  return {
+    kind: 'idle',
+    shortLabel: '',
+    detailLabel: '',
+    totalUnread: 0,
+    approvalCount: 0,
+  };
+}
+
 export function applyRealtimeEventToState(
   prev: FamilyBootstrapState,
   event: FamilyRealtimeEvent
@@ -339,6 +439,7 @@ export const familyClientApi = {
 class FamilyLiveClientStore {
   private state: FamilyBootstrapState = createEmptyBootstrapState();
   private activeScopeId = 'default';
+  private initialBootstrapPromise: Promise<void> | null = null;
   private eventSource: EventSource | null = null;
   private readonly subscribers = new Set<() => void>();
   private readonly focusListeners = new Set<
@@ -369,6 +470,15 @@ class FamilyLiveClientStore {
         this.eventSource = null;
       }
     };
+  }
+
+  public ensureBootstrapped(): Promise<void> {
+    if (!this.initialBootstrapPromise) {
+      this.initialBootstrapPromise = this.refresh(this.activeScopeId).catch(() => {
+        this.initialBootstrapPromise = null;
+      });
+    }
+    return this.initialBootstrapPromise;
   }
 
   public async refresh(scopeId: string = this.activeScopeId): Promise<void> {
@@ -441,4 +551,21 @@ export function useFamilyLiveState(scopeId: string): {
     state,
     refresh: () => familyLiveStore.refresh(scopeId),
   };
+}
+
+/**
+ * 轻量全局状态订阅（供左侧边栏几十条会话行共享，零重复 HTTP 请求风暴）。
+ */
+export function useFamilyGlobalState(): FamilyBootstrapState {
+  const [state, setState] = useState<FamilyBootstrapState>(() => familyLiveStore.getState());
+
+  useEffect(() => {
+    const unsub = familyLiveStore.subscribe(() => {
+      setState(familyLiveStore.getState());
+    });
+    void familyLiveStore.ensureBootstrapped();
+    return unsub;
+  }, []);
+
+  return state;
 }

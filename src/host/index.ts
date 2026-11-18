@@ -418,9 +418,24 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
 
           if (!handle) {
             const sessionId = `family-${member.id}-${randomUUID().slice(0, 8)}`;
+            const hasParentSession =
+              Boolean(scopeId) &&
+              scopeId !== 'default' &&
+              !scopeId.startsWith('family-') &&
+              Boolean(ctx.sessions.get(scopeId));
             handle = await agentsSvc.create({
               sessionId,
-              meta: { cwd },
+              meta: {
+                cwd,
+                ...(hasParentSession
+                  ? {
+                      parentSession: scopeId,
+                      isSeeded: false,
+                      origin: 'subagent',
+                      delegationDepth: 1,
+                    }
+                  : {}),
+              },
               agentOptions: desiredRoute
                 ? {
                     provider: desiredRoute.provider,
@@ -1514,9 +1529,9 @@ async function handleWebApiRequest(params: {
         members: registry.list(),
         templates: STARTER_MEMBER_TEMPLATES,
         bodies,
-        snapshots: hub.listSnapshots(scopeId),
-        rooms: groupEngine.listRooms(scopeId),
-        callRecords: hub.listPhoneCallRecords(scopeId),
+        snapshots: hub.listSnapshots(),
+        rooms: groupEngine.listAllRooms(scopeId),
+        callRecords: hub.listPhoneCallRecords(),
         pendingApprovals: hub.listPendingApprovals(),
       });
       return;

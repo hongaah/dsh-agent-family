@@ -2,7 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 
 import type { FamilyFocusTarget } from '../core/types.ts';
 import { ApprovalBanner } from './ApprovalBanner.tsx';
-import { familyLiveStore, useFamilyLiveState } from './api.ts';
+import {
+  deriveSessionFamilyActivity,
+  familyLiveStore,
+  useFamilyGlobalState,
+  useFamilyLiveState,
+} from './api.ts';
 import { FamilyToolCard } from './FamilyToolCard.tsx';
 import {
   type FamilyNavigationOrder,
@@ -223,33 +228,11 @@ function ComposerFamilyQuickBar({
     [state.pendingApprovals, sessionId]
   );
 
-  const { isSessionActive, activeLabel, totalUnread } = useMemo(() => {
-    const rooms = state.rooms.filter((r) => r.scopeId === sessionId);
-    const snaps = state.snapshots.filter((s) => s.scopeId === sessionId);
-
-    const runningRoom = rooms.find((r) => r.running);
-    const activeSnap = snaps.find(
-      (s) => s.state === 'working' || s.state === 'in_call' || s.state === 'awaiting_approval'
-    );
-    const activeMemberName = activeSnap
-      ? state.members.find((m) => m.id === activeSnap.memberId)?.name ?? activeSnap.memberId
-      : '';
-
-    const unreadRooms = rooms.reduce((sum, r) => sum + (r.unreadCount ?? 0), 0);
-    const unreadMembers = snaps.reduce((sum, s) => sum + (s.unreadCount ?? 0), 0);
-
-    return {
-      isSessionActive: Boolean(runningRoom || activeSnap),
-      activeLabel: runningRoom
-        ? runningRoom.activeSpeakerId
-          ? `${state.members.find((m) => m.id === runningRoom.activeSpeakerId)?.name ?? runningRoom.activeSpeakerId}发言中`
-          : '群聊进行中'
-        : activeMemberName
-          ? `${activeMemberName}执行中`
-          : '',
-      totalUnread: unreadRooms + unreadMembers,
-    };
-  }, [state.rooms, state.snapshots, state.members, sessionId]);
+  const activity = useMemo(
+    () => deriveSessionFamilyActivity(state, sessionId),
+    [state, sessionId]
+  );
+  const isSessionActive = activity.kind === 'active' || activity.kind === 'approval';
 
   return (
     <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 4 }}>
@@ -272,13 +255,171 @@ function ComposerFamilyQuickBar({
               : {}),
         }}
       >
-        {isSessionActive ? <span className="dshfam-live-green-dot" /> : <span>🏠</span>}
+        {activity.kind === 'active' ? <span className="dshfam-live-green-dot" /> : <span>🏠</span>}
         <span>
-          {isSessionActive && activeLabel ? `家庭 · ${activeLabel}` : `家庭 (${enabledCount})`}
+          {activity.kind === 'active' && activity.shortLabel
+            ? `家庭 · ${activity.shortLabel}`
+            : `家庭 (${enabledCount})`}
         </span>
-        {totalUnread > 0 && <span className="sh-unread-badge">{totalUnread}</span>}
+        {activity.totalUnread > 0 && (
+          <span className="sh-unread-badge">{activity.totalUnread}</span>
+        )}
         {scopedApprovals.length > 0 && <span>· 🙋 {scopedApprovals.length} 待批示</span>}
       </button>
+    </div>
+  );
+}
+
+/**
+ * 左侧对话列表每一行的行首状态点（挂载到 DSH 原生 `sidebar.session.row.leading`）。
+ * 当该会话下的家庭成员正在发言/执行、等待批示或有未读消息时，在侧边栏对话标题前同步亮起状态标识。
+ */
+function SessionRowFamilyLeadingMark({
+  sessionId,
+}: {
+  readonly sessionId?: string;
+}): React.ReactElement | null {
+  const state = useFamilyGlobalState();
+  const activity = useMemo(
+    () => (sessionId ? deriveSessionFamilyActivity(state, sessionId) : null),
+    [state, sessionId]
+  );
+
+  if (!activity || activity.kind === 'idle') {
+    return null;
+  }
+
+  const dotColor = activity.kind === 'approval' ? '#f59e0b' : '#10b981';
+  const isPulsing = activity.kind === 'active' || activity.kind === 'approval';
+
+  return (
+    <span
+      role="img"
+      aria-label={activity.detailLabel}
+      title={activity.detailLabel}
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        width: 14,
+        height: 14,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+      }}
+    >
+      <span
+        style={{
+          width: 7,
+          height: 7,
+          borderRadius: 999,
+          background: dotColor,
+          boxShadow: isPulsing
+            ? `0 0 0 3px ${activity.kind === 'approval' ? 'rgba(245, 158, 11, 0.24)' : 'rgba(16, 185, 129, 0.22)'}`
+            : 'none',
+          animation: isPulsing ? 'sh-pulse 1.4s ease-in-out infinite' : 'none',
+        }}
+      />
+    </span>
+  );
+}
+
+/**
+ * 左侧对话列表每一行的行尾轻量标签（挂载到 DSH 原生 `sidebar.session.row.trailing`）。
+ * 展示如「小前端发言中」「待批示」或未读计数徽章。
+ */
+function SessionRowFamilyTrailingBadge({
+  sessionId,
+}: {
+  readonly sessionId?: string;
+}): React.ReactElement | null {
+  const state = useFamilyGlobalState();
+  const activity = useMemo(
+    () => (sessionId ? deriveSessionFamilyActivity(state, sessionId) : null),
+    [state, sessionId]
+  );
+
+  if (!activity || activity.kind === 'idle') {
+    return null;
+  }
+
+  if (activity.kind === 'unread') {
+    return (
+      <span
+        className="sh-unread-badge"
+        title={activity.detailLabel}
+        style={{ height: 16, minWidth: 16, fontSize: 10 }}
+      >
+        {activity.totalUnread}
+      </span>
+    );
+  }
+
+  const isApproval = activity.kind === 'approval';
+  return (
+    <span
+      title={activity.detailLabel}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        height: 17,
+        padding: '0 6px',
+        borderRadius: 999,
+        fontSize: 10.5,
+        fontWeight: 600,
+        lineHeight: '17px',
+        whiteSpace: 'nowrap',
+        maxWidth: 88,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        color: isApproval ? '#f59e0b' : '#10b981',
+        background: isApproval ? 'rgba(245, 158, 11, 0.14)' : 'rgba(16, 185, 129, 0.14)',
+      }}
+    >
+      {activity.shortLabel}
+    </span>
+  );
+}
+
+/**
+ * 左侧对话列表悬停卡片详情行（挂载到 DSH 原生 `sidebar.session.row.hover`）。
+ */
+function SessionRowFamilyHoverStatus({
+  sessionId,
+}: {
+  readonly sessionId?: string;
+}): React.ReactElement | null {
+  const state = useFamilyGlobalState();
+  const activity = useMemo(
+    () => (sessionId ? deriveSessionFamilyActivity(state, sessionId) : null),
+    [state, sessionId]
+  );
+
+  if (!activity || activity.kind === 'idle') {
+    return null;
+  }
+
+  const dotColor = activity.kind === 'approval' ? '#f59e0b' : '#10b981';
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 7,
+        fontSize: 12,
+        lineHeight: '18px',
+        color: 'var(--dsw-alias-hovercard-label-secondary, #a1a1aa)',
+      }}
+    >
+      <span
+        style={{
+          width: 7,
+          height: 7,
+          borderRadius: 999,
+          background: dotColor,
+          flexShrink: 0,
+        }}
+      />
+      <span>🏠 {activity.detailLabel}</span>
     </div>
   );
 }
@@ -563,7 +704,43 @@ export function apply(ctx: ClientRuntimeContext): void {
     )
   );
 
-  // 2. 主聊天输入框旁家庭状态胶囊（活跃呼吸绿点 + 未读数角标 + 点击同屏展开当前会话群聊）
+  // 2. 主聊天输入框旁家庭状态胶囊 + 左侧会话列表行级实时状态标识（leading 呼吸绿点 + trailing 状态胶囊 + hover 详情）
+  ctx.slots.inject('sidebar.session.row.leading', () =>
+    ctx.slots.register(
+      {
+        name: 'sidebar.session.row.leading',
+        id: 'dsh-agent-family-row-leading',
+        order: 5,
+        locale: LOCALE_NS,
+      },
+      SessionRowFamilyLeadingMark
+    )
+  );
+
+  ctx.slots.inject('sidebar.session.row.trailing', () =>
+    ctx.slots.register(
+      {
+        name: 'sidebar.session.row.trailing',
+        id: 'dsh-agent-family-row-trailing',
+        order: 5,
+        locale: LOCALE_NS,
+      },
+      SessionRowFamilyTrailingBadge
+    )
+  );
+
+  ctx.slots.inject('sidebar.session.row.hover', () =>
+    ctx.slots.register(
+      {
+        name: 'sidebar.session.row.hover',
+        id: 'dsh-agent-family-row-hover',
+        order: 5,
+        locale: LOCALE_NS,
+      },
+      SessionRowFamilyHoverStatus
+    )
+  );
+
   ctx.slots.inject('conversation.input.left', () =>
     ctx.slots.register(
       {
