@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -724,5 +724,249 @@ describe('Cordis Host Plugin (Tools, SystemPrompt, @Mention Pre-Step, Web API & 
     });
     const dupJson = (await post2Dup.json()) as { deduplicated?: boolean };
     expect(dupJson.deduplicated).toBe(true);
+  });
+
+  it('accepts image & file attachments on slash commands (/fe-claude), delegates main-session attachments via family_assign, and relays attachments between agents via phone_call', async () => {
+    const receivedByMember = new Map<
+      string,
+      Array<{ prompt: string; attachmentsCount: number; firstAttachmentName?: string }>
+    >();
+
+    // 模拟 DSH 本地无扩展名图片对象与通用文件对象
+    const rawHostImageObject = join(tempDir, 'sha256_raw_img_obj');
+    writeFileSync(rawHostImageObject, Buffer.from('fake-png-raster'), 'utf8');
+    const rawHostDocFile = join(tempDir, 'spec-v1.md');
+    writeFileSync(rawHostDocFile, '# 接口规格\n字段说明\n', 'utf8');
+    const agentProducedShot = join(tempDir, 'render-bug.png');
+    writeFileSync(agentProducedShot, Buffer.from('agent-shot-bytes'), 'utf8');
+
+    const registeredCmds = new Map<
+      string,
+      {
+        input?: { hint: string; attachments?: boolean };
+        handler: (inv: {
+          commandId: string;
+          agent: { session: { id: string; header: { cwd?: string } } };
+          rawInput: string;
+          attachments?: readonly unknown[];
+          signal: AbortSignal;
+        }) => Promise<{ kind: string; text?: string }>;
+      }
+    >();
+
+    const multiModalDriver: BodyDriver = {
+      kind: 'claude',
+      awaken: async (awakenCtx: AwakenMemberContext): Promise<LiveMemberSession> => ({
+        bodyKind: 'claude',
+        isAlive: () => true,
+        sendTurn: (prompt, _sig, attachments) => {
+          const list = receivedByMember.get(awakenCtx.member.id) ?? [];
+          list.push({
+            prompt,
+            attachmentsCount: attachments?.length ?? 0,
+            firstAttachmentName: attachments?.[0]?.name,
+          });
+          receivedByMember.set(awakenCtx.member.id, list);
+
+          const q = new AsyncEventQueue<MemberStreamEvent>();
+          if (awakenCtx.member.id === 'fe-codex' && prompt.includes('转给小克')) {
+            // 小G 通过随身手机 phone_call 把本地截图 render-bug.png 作为附件直接发给小克！
+            void (async () => {
+              const mcpRes = await fetch(awakenCtx.phoneMcp.httpUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${awakenCtx.phoneMcp.bearerToken}`,
+                },
+                body: JSON.stringify({
+                  jsonrpc: '2.0',
+                  id: 1,
+                  method: 'tools/call',
+                  params: {
+                    name: 'phone_call',
+                    arguments: {
+                      to: 'fe-claude',
+                      intent: 'request_help',
+                      message: '小克快看我刚截的渲染错位图',
+                      attachments: ['render-bug.png'],
+                    },
+                  },
+                }),
+              });
+              const json = (await mcpRes.json()) as {
+                result?: { content?: Array<{ text?: string }> };
+              };
+              const replyText = json.result?.content?.[0]?.text ?? '';
+              q.push({ kind: 'text_delta', delta: `已发图请教:${replyText}` });
+              q.push({ kind: 'turn_done', finalText: `已发图请教:${replyText}` });
+              q.close();
+            })();
+            return q;
+          }
+
+          const ack = `收到 ${attachments?.length ?? 0} 个附件 (${attachments?.map((a) => a.name).join(',') ?? ''})`;
+          q.push({ kind: 'text_delta', delta: ack });
+          q.push({ kind: 'turn_done', finalText: ack });
+          q.close();
+          return q;
+        },
+        replyApproval: async () => undefined,
+        dispose: async () => undefined,
+      }),
+    };
+
+    const baseCtx = buildMockHostContext();
+    const attHostCtx: DshHostContext = {
+      ...baseCtx,
+      get: (svc) => {
+        if (svc === 'attachments') {
+          return {
+            imageHostPath: () => rawHostImageObject,
+            fileHostPath: () => rawHostDocFile,
+          };
+        }
+        return baseCtx.get(svc);
+      },
+      commands: {
+        register: (def) => {
+          registeredCmds.set(def.name, def as never);
+          return () => registeredCmds.delete(def.name);
+        },
+      },
+    };
+
+    const plugin = createFamilyHostPlugin({
+      storageDir: tempDir,
+      customDrivers: [multiModalDriver],
+    });
+    plugin.apply(attHostCtx);
+
+    httpServer = createServer((req, res) => {
+      const matched = routes.find((r) =>
+        r.kind === 'exact' ? req.url === r.path : (req.url ?? '').startsWith(r.path)
+      );
+      if (!matched) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      void matched.handler(req, res);
+    });
+    await new Promise<void>((r) => httpServer!.listen(0, '127.0.0.1', () => r()));
+    const port = (httpServer.address() as AddressInfo).port;
+    const base = `http://127.0.0.1:${port}`;
+
+    for (const m of [
+      { id: 'fe-claude', name: '小克' },
+      { id: 'fe-codex', name: '小G' },
+    ]) {
+      await fetch(`${base}/dsh-agent-family/api/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: m.id,
+          name: m.name,
+          specialty: '前端开发',
+          body: { kind: 'claude' },
+          soulPrompt: '靠谱前端',
+        }),
+      });
+    }
+
+    // 1. 验证 /family、/family-group、/fe-claude 均显式声明 input.attachments === true，并把图片+文件传给成员！
+    expect(registeredCmds.get('family')?.input?.attachments).toBe(true);
+    expect(registeredCmds.get('family-group')?.input?.attachments).toBe(true);
+    expect(registeredCmds.get('fe-claude')?.input?.attachments).toBe(true);
+
+    const slashRes = await registeredCmds.get('fe-claude')!.handler({
+      commandId: 'c-att-1',
+      agent: { session: { id: 'sess-att', header: { cwd: tempDir } } },
+      rawInput: ' 识别一下内容',
+      attachments: [
+        {
+          type: 'image',
+          attachment: { attachmentId: 'sha256:111', mediaType: 'image/png' },
+        },
+        {
+          type: 'file',
+          attachment: { attachmentId: 'sha256:222', name: 'spec-v1.md' },
+        },
+      ],
+      signal: new AbortController().signal,
+    });
+    expect(slashRes.kind).toBe('success');
+    expect(receivedByMember.get('fe-claude')?.[0]?.attachmentsCount).toBe(2);
+    // 验证无扩展名的宿主图片对象已自动补齐 .png 扩展名
+    expect(receivedByMember.get('fe-claude')?.[0]?.firstAttachmentName).toBe('image.png');
+
+    // 2. 验证主会话普通消息上传图片后，调用 family_assign 会自动将该附件委托给成员（无需手动搬运）
+    const preStep = preStepListeners[0]!;
+    await preStep(
+      {
+        agent: { session: { id: 'sess-delegate', header: { cwd: tempDir } } },
+        step: 1,
+        signal: new AbortController().signal,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                attachment: {
+                  attachmentId: 'sha256:333',
+                  mediaType: 'image/png',
+                  name: 'ui-mockup.png',
+                },
+              },
+              { type: 'text', text: '@小G 把这张图顺便转给小克一起看' },
+            ],
+            source: { kind: 'user' },
+          },
+        ],
+      },
+      async () => ({
+        kind: 'enter',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                attachment: {
+                  attachmentId: 'sha256:333',
+                  mediaType: 'image/png',
+                  name: 'ui-mockup.png',
+                },
+              },
+              { type: 'text', text: '@小G 把这张图顺便转给小克一起看' },
+            ],
+            source: { kind: 'user' },
+          },
+        ],
+      })
+    );
+
+    // 3. 主对话调用 family_assign（不手填 attachmentPaths 也能自动继承主会话图片），且小G再用 phone_call 把 render-bug.png 发给小克！
+    const assignTool = registeredTools.get('family_assign')!;
+    await assignTool.execute(
+      {
+        tasks: [{ memberId: 'fe-codex', goal: '看看图并转给小克' }],
+      },
+      {
+        callId: 'call-del-1',
+        name: 'family_assign',
+        arguments: {},
+        signal: new AbortController().signal,
+        agent: { session: { id: 'sess-delegate', header: { cwd: tempDir } } },
+      }
+    );
+
+    expect(receivedByMember.get('fe-codex')?.[0]?.attachmentsCount).toBe(1);
+    expect(receivedByMember.get('fe-codex')?.[0]?.firstAttachmentName).toBe('ui-mockup.png');
+
+    // 验证小克收到了小G通过 phone_call 传过来的 render-bug.png 附件！
+    const claudeTurns = receivedByMember.get('fe-claude') ?? [];
+    expect(claudeTurns.at(-1)?.attachmentsCount).toBe(1);
+    expect(claudeTurns.at(-1)?.firstAttachmentName).toBe('render-bug.png');
   });
 });

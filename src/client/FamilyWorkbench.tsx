@@ -1738,6 +1738,14 @@ export function FamilyWorkbench({
                       <div style={{ color: 'var(--sh-muted-fg)', fontSize: 11.5 }}>
                         {call.message.slice(0, 120)}
                       </div>
+                      <MessageAttachmentsStrip
+                        attachments={call.attachments}
+                        onOpenFile={
+                          onOpenWorkspaceFile
+                            ? (fp) => handleOpenFileInWorkspace(fp)
+                            : undefined
+                        }
+                      />
                       {call.reply && (
                         <div
                           style={{

@@ -242,6 +242,7 @@ export interface PhoneCallRecord {
   readonly toMemberName: string;
   readonly intent: PhoneCallIntent;
   readonly message: string;
+  readonly attachments?: readonly FamilyMessageAttachment[];
   readonly status: 'ringing' | 'completed' | 'busy_rejected' | 'hop_limited' | 'failed';
   readonly reply?: string;
   readonly createdAt: string;

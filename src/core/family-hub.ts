@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { formatAttachmentsForAgentPrompt } from './attachment-store.ts';
+import {
+  formatAttachmentsForAgentPrompt,
+  type FamilyAttachmentStore,
+} from './attachment-store.ts';
 import { formatAvatarPrefixForPrompt } from './avatar-utils.ts';
 import { resolveNodeExecutable } from './cli-locator.ts';
 import type { DshSessionContextBridge } from './dsh-context-bridge.ts';
@@ -144,6 +147,7 @@ export class FamilyHub {
   private groupEngine: GroupChatEngine | null = null;
   private contextBridge: DshSessionContextBridge | null = null;
   private profileStore: FamilyProfileStore | null = null;
+  private attachmentStore: FamilyAttachmentStore | null = null;
 
   public constructor(options: {
     readonly registry: MemberRegistry;
@@ -186,6 +190,31 @@ export class FamilyHub {
 
   public attachProfileStore(store: FamilyProfileStore): void {
     this.profileStore = store;
+  }
+
+  public attachAttachmentStore(store: FamilyAttachmentStore): void {
+    this.attachmentStore = store;
+  }
+
+  public resolveAgentAttachmentPaths(
+    rawPaths: readonly string[] | undefined,
+    baseCwd: string
+  ): FamilyMessageAttachment[] {
+    if (!rawPaths || rawPaths.length === 0) return [];
+    const out: FamilyMessageAttachment[] = [];
+    for (const p of rawPaths) {
+      if (!p || !p.trim()) continue;
+      if (this.attachmentStore) {
+        const imported = this.attachmentStore.importFromLocalPath({
+          filePath: p,
+          baseCwd,
+        });
+        if (imported) {
+          out.push(imported);
+        }
+      }
+    }
+    return out;
   }
 
   public getSharedProfile(): FamilySharedProfile | undefined {
@@ -795,6 +824,7 @@ export class FamilyHub {
     readonly toMemberId: string;
     readonly intent: PhoneCallIntent;
     readonly message: string;
+    readonly attachmentPaths?: readonly string[];
     readonly signal?: AbortSignal;
   }): Promise<string> {
     const normalizedTo = params.toMemberId.replace(/^@/u, '').trim();
@@ -853,6 +883,7 @@ export class FamilyHub {
       return `本次连续跨成员转拨已达到 ${MAX_CALL_HOPS} 跳上限，为防止循环转包，请先基于现有信息向你的上游呼叫方反馈阶段结论或分歧点。`;
     }
 
+    const callAttachments = this.resolveAgentAttachmentPaths(params.attachmentPaths, cwd);
     const callId = randomUUID();
     const ringingRecord: PhoneCallRecord = {
       id: callId,
@@ -863,6 +894,7 @@ export class FamilyHub {
       toMemberName: callee.name,
       intent: params.intent,
       message: params.message,
+      ...(callAttachments.length > 0 ? { attachments: callAttachments } : {}),
       status: 'ringing',
       createdAt: new Date().toISOString(),
     };
@@ -895,6 +927,7 @@ export class FamilyHub {
         senderName: `${caller?.name ?? params.callerId} 来电 (${intentLabel})`,
         message: framedIncoming,
         displayMessage: params.message,
+        ...(callAttachments.length > 0 ? { attachments: callAttachments } : {}),
         cwd,
         callChain: nextChain,
         signal: params.signal,
@@ -930,6 +963,7 @@ export class FamilyHub {
     readonly title?: string;
     readonly participants?: readonly string[];
     readonly message: string;
+    readonly attachmentPaths?: readonly string[];
   }): Promise<string> {
     if (!this.groupEngine) {
       return '当前家庭群聊引擎尚未挂载，请改用 phone_call 一对一联系。';
@@ -968,6 +1002,7 @@ export class FamilyHub {
     const existingRoom = this.groupEngine.getRoom(params.scopeId, targetGroupId) ?? beforeCount;
     const startIdx = existingRoom.messages.length;
 
+    const groupAttachments = this.resolveAgentAttachmentPaths(params.attachmentPaths, cwd);
     const groupDiscussToken = `groupcall:${randomUUID()}`;
     callerActor?.activeWatchdog?.pause(groupDiscussToken);
     let updatedRoom;
@@ -979,6 +1014,7 @@ export class FamilyHub {
         senderName: caller?.name ?? params.callerId,
         senderAvatar: caller?.avatar ?? '🤖',
         content: params.message,
+        ...(groupAttachments.length > 0 ? { attachments: groupAttachments } : {}),
         cwd,
         blockedMemberIds: [...activeChain, params.callerId],
         parentCallChain: [...activeChain, params.callerId],

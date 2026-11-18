@@ -15,10 +15,7 @@ import {
   FamilyWorkbench,
   type SessionSummaryOption,
 } from './FamilyWorkbench.tsx';
-import {
-  FileReferenceHighlightChip,
-  MemberMentionPill,
-} from './MemberHoverChip.tsx';
+import { MemberMentionPill } from './MemberHoverChip.tsx';
 import { ensureFamilyStyles } from './styles.ts';
 
 export const name = 'dsh-agent-family';
@@ -414,12 +411,10 @@ function ComposerFamilyQuickBar({
   sessionId,
   inputActions,
   onOpenForSession,
-  onOpenReceiptFile,
 }: {
   readonly sessionId: string;
   readonly inputActions?: DshConversationInputActions;
   readonly onOpenForSession: (sessionId: string, target: FamilyFocusTarget) => void;
-  readonly onOpenReceiptFile: (sessionId: string, receiptPath: string) => void;
 }): React.ReactElement {
   const { state } = useFamilyLiveState(sessionId);
 
@@ -441,71 +436,40 @@ function ComposerFamilyQuickBar({
     () => deriveSessionFamilyActivity(state, sessionId),
     [state, sessionId]
   );
-  const pendingSync = useMemo(
-    () => getPendingMainSyncForSession(state, sessionId),
-    [state, sessionId]
-  );
-  const pendingFileCount = pendingSync?.changedFiles.length ?? 0;
-  const pendingNoteCount = pendingSync?.noteCount ?? 0;
-  const latestReceiptPath = pendingSync?.latestReceiptPath;
   const isSessionActive = activity.kind === 'active' || activity.kind === 'approval';
-
-  const chipTitle =
-    pendingFileCount > 0
-      ? `家庭成员已修改 ${pendingFileCount} 个文件 — 下次发消息将静默同步纪要文件索引并开启防覆盖重读守卫（不污染提问气泡）`
-      : '在当前会话旁打开智能体家庭群聊（也可在输入框敲 @成员名称 或 /family 直接指派）';
-
-  const receiptChipLabel =
-    pendingFileCount > 0
-      ? `协作纪要 · 改${pendingFileCount}文件`
-      : pendingNoteCount > 0
-        ? `协作纪要 · ${pendingNoteCount}条`
-        : '最新协作纪要.md';
 
   return (
     <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 4 }}>
       {scopedApprovals.length > 0 && <ApprovalBanner approvals={scopedApprovals} compact />}
-      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-        <button
-          type="button"
-          onClick={() => onOpenForSession(sessionId, { kind: 'group', groupId: 'family-main' })}
-          className="dshfam-chip"
-          title={chipTitle}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '3px 10px',
-            fontSize: 12,
-            ...(scopedApprovals.length > 0
-              ? { borderColor: '#d97706', color: '#d97706', fontWeight: 600 }
-              : isSessionActive
-                ? { borderColor: 'rgba(16, 185, 129, 0.5)', fontWeight: 600 }
-                : pendingFileCount > 0
-                  ? { borderColor: 'rgba(59, 130, 246, 0.45)' }
-                  : {}),
-          }}
-        >
-          {activity.kind === 'active' ? <span className="dshfam-live-green-dot" /> : <span>🏠</span>}
-          <span>
-            {activity.kind === 'active' && activity.shortLabel
-              ? `家庭 · ${activity.shortLabel}`
-              : `家庭 (${enabledCount})`}
-          </span>
-          {activity.totalUnread > 0 && (
-            <span className="sh-unread-badge">{activity.totalUnread}</span>
-          )}
-          {scopedApprovals.length > 0 && <span>· 🙋 {scopedApprovals.length} 待批示</span>}
-        </button>
-
-        {latestReceiptPath && (
-          <FileReferenceHighlightChip
-            label={receiptChipLabel}
-            fullPath={`点击在 DSH 右侧栏预览家庭协作纪要：${latestReceiptPath}`}
-            onOpen={() => onOpenReceiptFile(sessionId, latestReceiptPath)}
-          />
+      <button
+        type="button"
+        onClick={() => onOpenForSession(sessionId, { kind: 'group', groupId: 'family-main' })}
+        className="dshfam-chip"
+        title="在当前会话旁打开智能体家庭群聊（也可在输入框敲 @成员名称 或 /family 直接指派，支持附带图片与文件）"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '3px 10px',
+          fontSize: 12,
+          ...(scopedApprovals.length > 0
+            ? { borderColor: '#d97706', color: '#d97706', fontWeight: 600 }
+            : isSessionActive
+              ? { borderColor: 'rgba(16, 185, 129, 0.5)', fontWeight: 600 }
+              : {}),
+        }}
+      >
+        {activity.kind === 'active' ? <span className="dshfam-live-green-dot" /> : <span>🏠</span>}
+        <span>
+          {activity.kind === 'active' && activity.shortLabel
+            ? `家庭 · ${activity.shortLabel}`
+            : `家庭 (${enabledCount})`}
+        </span>
+        {activity.totalUnread > 0 && (
+          <span className="sh-unread-badge">{activity.totalUnread}</span>
         )}
-      </div>
+        {scopedApprovals.length > 0 && <span>· 🙋 {scopedApprovals.length} 待批示</span>}
+      </button>
     </div>
   );
 }
@@ -1089,9 +1053,6 @@ export function apply(ctx: ClientRuntimeContext): void {
             sessionId={props.sessionId}
             inputActions={props.inputActions}
             onOpenForSession={openFamilyForConversation}
-            onOpenReceiptFile={(sid, receiptPath) =>
-              openWorkspaceFileInHost(sid, undefined, receiptPath)
-            }
           />
         );
       }

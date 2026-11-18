@@ -46,6 +46,15 @@ export interface DshApprovalService {
   setPolicy?(agent: DshOwnedAgent, policy: 'ask' | 'never'): void;
 }
 
+export interface DshHostAttachmentStoreService {
+  imageHostPath?(ref: unknown): string | undefined;
+  fileHostPath?(ref: unknown): string | undefined;
+  readImage?(
+    ref: unknown,
+    signal?: AbortSignal
+  ): Promise<{ readonly data: Uint8Array; readonly mediaType?: string }>;
+}
+
 export interface DshModelSelection {
   readonly provider: string;
   readonly model: string;

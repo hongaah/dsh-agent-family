@@ -46,6 +46,12 @@ const PHONE_TOOL_SCHEMAS = [
           type: 'string',
           description: '在电话里向对方清晰说明的背景、问题或协作诉求',
         },
+        attachments: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            '可选：随电话发送给对方的本地图片或文件附件路径数组（支持相对当前工作目录或绝对路径；图片会自动作为视觉多模态附件传给对方并在面板展示缩略图，文件会展示高亮附件卡并提供可读路径）',
+        },
       },
       required: ['to', 'message'],
       additionalProperties: false,
@@ -80,6 +86,12 @@ const PHONE_TOOL_SCHEMAS = [
         message: {
           type: 'string',
           description: '你在群里发起讨论的开场白与议题（可用 @成员ID 点名谁先发言）',
+        },
+        attachments: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            '可选：随本次群消息一并发进群里的本地图片或文件附件路径数组（图片会自动以视觉多模态传给群成员并在群聊展示缩略图，普通文件展示附件卡与可读路径）',
         },
       },
       required: ['message'],
@@ -436,20 +448,27 @@ export class FamilyPhoneBus {
       if (!to.trim() || !message.trim()) {
         return '参数缺失：phone_call 需要提供目标成员 to 与通话内容 message。';
       }
+      const attachmentPaths = Array.isArray(args.attachments)
+        ? args.attachments.filter((x): x is string => typeof x === 'string')
+        : undefined;
       return this.hub.handlePhoneCall({
         scopeId,
         callerId,
         toMemberId: to,
         intent,
         message,
+        attachmentPaths,
         signal,
       });
     }
 
     if (toolName === 'phone_group_discuss') {
       const message = typeof args.message === 'string' ? args.message : '';
-      if (!message.trim()) {
-        return '参数缺失：phone_group_discuss 需要提供开场消息 message。';
+      const attachmentPaths = Array.isArray(args.attachments)
+        ? args.attachments.filter((x): x is string => typeof x === 'string')
+        : undefined;
+      if (!message.trim() && (!attachmentPaths || attachmentPaths.length === 0)) {
+        return '参数缺失：phone_group_discuss 需要提供开场消息 message 或附件 attachments。';
       }
       const groupId = typeof args.groupId === 'string' ? args.groupId : undefined;
       const title = typeof args.title === 'string' ? args.title : undefined;
@@ -462,7 +481,8 @@ export class FamilyPhoneBus {
         groupId,
         title,
         participants,
-        message,
+        message: message.trim() || '请大家看看我刚发在群里的附件。',
+        attachmentPaths,
       });
     }
 

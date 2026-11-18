@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
@@ -77,6 +77,16 @@ function parseBase64OrDataUrl(raw: string): { mimeFromHeader?: string; buffer: B
   };
 }
 
+const MIME_TO_EXT: Readonly<Record<string, string>> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+  'image/svg+xml': '.svg',
+  'application/pdf': '.pdf',
+};
+
 export class FamilyAttachmentStore {
   private readonly attachmentsDir: string;
   private readonly apiPrefix: string;
@@ -86,44 +96,122 @@ export class FamilyAttachmentStore {
     this.apiPrefix = apiPrefix;
   }
 
-  public saveUploadedFile(input: {
+  public saveRawBuffer(input: {
     readonly name: string;
     readonly mimeType?: string;
-    readonly dataBase64: string;
+    readonly buffer: Buffer | Uint8Array;
   }): FamilyMessageAttachment {
-    const { mimeFromHeader, buffer } = parseBase64OrDataUrl(input.dataBase64);
-    if (buffer.byteLength === 0) {
-      throw new Error('上传附件内容不能为空。');
+    const buf = Buffer.isBuffer(input.buffer) ? input.buffer : Buffer.from(input.buffer);
+    if (buf.byteLength === 0) {
+      throw new Error('附件内容不能为空。');
     }
-    if (buffer.byteLength > MAX_ATTACHMENT_BYTES) {
+    if (buf.byteLength > MAX_ATTACHMENT_BYTES) {
       throw new Error('单个附件大小上限为 32 MB。');
     }
 
     const id = randomUUID().replace(/-/gu, '').slice(0, 16);
     const ext = extname(input.name).toLowerCase();
     const inferredMime =
-      (input.mimeType?.trim().toLowerCase() || mimeFromHeader || EXT_TO_MIME[ext]) ??
+      (input.mimeType?.trim().toLowerCase() || EXT_TO_MIME[ext]) ??
       'application/octet-stream';
     const isImage = IMAGE_MIME_SET.has(inferredMime);
+    const fallbackExt = MIME_TO_EXT[inferredMime] ?? (isImage ? '.png' : ext || '.bin');
 
-    const safeName = sanitizeAttachmentFileName(
-      input.name,
-      isImage ? '.png' : ext || '.bin'
-    );
+    let safeName = sanitizeAttachmentFileName(input.name, fallbackExt);
+    if (!extname(safeName) && fallbackExt) {
+      safeName = `${safeName}${fallbackExt}`;
+    }
 
-    // 存放在 attachments/<id>/<原始安全文件名>，保证 DSH 原生右侧栏文件预览 Tab 标题直接展示干净的原文件名
     const itemDir = join(this.attachmentsDir, id);
     mkdirSync(itemDir, { recursive: true });
     const filePath = join(itemDir, safeName);
-    writeFileSync(filePath, buffer);
+    writeFileSync(filePath, buf);
 
     const meta: FamilyMessageAttachment = {
       id,
       kind: isImage ? 'image' : 'file',
       name: safeName,
       mimeType: inferredMime,
-      sizeBytes: buffer.byteLength,
+      sizeBytes: buf.byteLength,
       filePath,
+      previewUrl: `${this.apiPrefix}/attachments/${id}`,
+    };
+    writeFileSync(join(itemDir, '.meta.json'), `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
+    return meta;
+  }
+
+  public saveUploadedFile(input: {
+    readonly name: string;
+    readonly mimeType?: string;
+    readonly dataBase64: string;
+  }): FamilyMessageAttachment {
+    const { mimeFromHeader, buffer } = parseBase64OrDataUrl(input.dataBase64);
+    return this.saveRawBuffer({
+      name: input.name,
+      mimeType: input.mimeType?.trim().toLowerCase() || mimeFromHeader,
+      buffer,
+    });
+  }
+
+  /**
+   * 将本机磁盘上的已有文件（如 DSH 主会话附件对象、工作区文件、或某位 Agent 生成的截图/文档路径）
+   * 导入注册为家庭标准附件：既生成前端可直接展示的 `previewUrl` 高亮卡片/缩略图，又补齐标准扩展名供各 CLI 原生多模态识别。
+   */
+  public importFromLocalPath(params: {
+    readonly filePath: string;
+    readonly baseCwd?: string;
+    readonly displayName?: string;
+    readonly mimeType?: string;
+  }): FamilyMessageAttachment | null {
+    const cleanedRaw = params.filePath.trim().replace(/^@"?|"?$/gu, '');
+    if (!cleanedRaw) return null;
+    const absSource = params.baseCwd ? resolve(params.baseCwd, cleanedRaw) : resolve(cleanedRaw);
+    if (!existsSync(absSource)) return null;
+
+    let st;
+    try {
+      st = statSync(absSource);
+    } catch {
+      return null;
+    }
+    if (!st.isFile()) return null;
+
+    const rawName = params.displayName?.trim() || basename(absSource);
+    const ext = (extname(rawName) || extname(absSource)).toLowerCase();
+    const inferredMime =
+      (params.mimeType?.trim().toLowerCase() || EXT_TO_MIME[ext]) ??
+      'application/octet-stream';
+    const isImage = IMAGE_MIME_SET.has(inferredMime);
+    const desiredExt = MIME_TO_EXT[inferredMime] ?? (isImage ? '.png' : ext || '');
+
+    let safeName = sanitizeAttachmentFileName(rawName, desiredExt || '.bin');
+    if (!extname(safeName) && desiredExt) {
+      safeName = `${safeName}${desiredExt}`;
+    }
+
+    const id = randomUUID().replace(/-/gu, '').slice(0, 16);
+    const itemDir = join(this.attachmentsDir, id);
+    mkdirSync(itemDir, { recursive: true });
+
+    // 若源文件缺少扩展名（如 DSH 底层 sha256 裸对象）或体积适中（<= 16MB），拷贝一份带标准扩展名的快照以便 Codex localImage 与 DSH 预览器准确识别类型
+    let finalFilePath = absSource;
+    if (!extname(absSource) || st.size <= 16 * 1024 * 1024) {
+      const copiedPath = join(itemDir, safeName);
+      try {
+        copyFileSync(absSource, copiedPath);
+        finalFilePath = copiedPath;
+      } catch {
+        finalFilePath = absSource;
+      }
+    }
+
+    const meta: FamilyMessageAttachment = {
+      id,
+      kind: isImage ? 'image' : 'file',
+      name: safeName,
+      mimeType: inferredMime,
+      sizeBytes: st.size,
+      filePath: finalFilePath,
       previewUrl: `${this.apiPrefix}/attachments/${id}`,
     };
     writeFileSync(join(itemDir, '.meta.json'), `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
