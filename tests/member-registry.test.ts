@@ -183,4 +183,53 @@ describe('MemberRegistry, SoulComposer & CliLocator', () => {
     expect(childEnv.NO_PROXY).toContain('127.0.0.1');
     expect(childEnv.no_proxy).toContain('127.0.0.1');
   });
+
+  it('auto-heals from backups/members.latest.json if members.json is externally overwritten with an older snapshot while respecting intentional remove()', () => {
+    const registry = new MemberRegistry(tempDir);
+    registry.create({
+      id: 'fe-codex',
+      name: '小G',
+      specialty: '前端快手',
+      body: { kind: 'codex' },
+      soulPrompt: '幽默快手',
+    });
+    registry.create({
+      id: 'fe-claude',
+      name: '小克',
+      specialty: '前端负责人',
+      body: { kind: 'claude' },
+      soulPrompt: '严谨可靠',
+    });
+
+    // 模拟外部编辑器误把 members.json 回滚成了昨天的旧快照
+    writeFileSync(
+      join(tempDir, 'members.json'),
+      JSON.stringify({
+        version: 1,
+        members: [
+          {
+            id: 'fe-codex',
+            name: '小前端',
+            avatar: 'lobe:codex',
+            specialty: '旧数据',
+            body: { kind: 'codex' },
+            soulPrompt: '旧灵魂',
+            enabled: true,
+            createdAt: '2026-11-17T10:00:00.000Z',
+            updatedAt: '2026-11-17T11:25:00.000Z',
+          },
+        ],
+      }),
+      'utf8'
+    );
+
+    // 重新读取时应自动识别旧时间戳并从 backups/members.latest.json 自愈恢复！
+    const names = registry.list().map((m) => m.name);
+    expect(names).toEqual(['小G', '小克']);
+
+    // 正常通过 UI 删除成员时，主文件与备份同步推进 savedAt，不会被误恢复
+    registry.remove('fe-claude');
+    const reloaded = new MemberRegistry(tempDir);
+    expect(reloaded.list().map((m) => m.name)).toEqual(['小G']);
+  });
 });

@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -171,6 +180,22 @@ function parsePersistedMembers(raw: unknown): FamilyMember[] {
   return parsed;
 }
 
+function extractEnvelopeSavedAt(raw: unknown, members: readonly FamilyMember[]): string {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const rec = raw as Record<string, unknown>;
+    if (typeof rec.savedAt === 'string' && rec.savedAt.trim()) {
+      return rec.savedAt.trim();
+    }
+  }
+  let maxUpdated = '';
+  for (const m of members) {
+    if (m.updatedAt > maxUpdated) {
+      maxUpdated = m.updatedAt;
+    }
+  }
+  return maxUpdated;
+}
+
 export function defaultFamilyStorageDir(): string {
   const dshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh');
   return join(dshHome, 'family');
@@ -179,38 +204,102 @@ export function defaultFamilyStorageDir(): string {
 export class MemberRegistry {
   private readonly storageDir: string;
   private readonly filePath: string;
+  private readonly backupDir: string;
+  private readonly latestBackupPath: string;
   private members: FamilyMember[] = [];
+  private lastKnownMtimeMs = 0;
+  private lastKnownSavedAt = '';
   private readonly listeners = new Set<(members: readonly FamilyMember[]) => void>();
 
   public constructor(storageDir: string = defaultFamilyStorageDir()) {
     this.storageDir = storageDir;
     this.filePath = join(storageDir, 'members.json');
+    this.backupDir = join(storageDir, 'backups');
+    this.latestBackupPath = join(this.backupDir, 'members.latest.json');
     this.reload();
   }
 
-  public reload(): readonly FamilyMember[] {
-    if (!existsSync(this.filePath)) {
-      this.members = [];
-      return this.list();
-    }
+  private readParsedFile(path: string): { savedAt: string; members: FamilyMember[] } | null {
+    if (!existsSync(path)) return null;
     try {
-      const content = readFileSync(this.filePath, 'utf8');
-      this.members = parsePersistedMembers(JSON.parse(content) as unknown);
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+      const members = parsePersistedMembers(parsed);
+      const savedAt = extractEnvelopeSavedAt(parsed, members);
+      return { savedAt, members };
     } catch {
-      this.members = [];
+      return null;
     }
-    return this.list();
+  }
+
+  private readFileMtimeMs(path: string): number {
+    try {
+      return statSync(path).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
+  public reload(): readonly FamilyMember[] {
+    const primary = this.readParsedFile(this.filePath);
+    const backup = this.readParsedFile(this.latestBackupPath);
+
+    // 防误回滚自愈保护：若主文件被外部工具（如编辑器历史回滚）覆盖成了比自动备份更旧的快照，自动从备份恢复
+    if (
+      backup &&
+      backup.members.length > 0 &&
+      (!primary ||
+        primary.members.length === 0 ||
+        (backup.savedAt && (!primary.savedAt || backup.savedAt > primary.savedAt)))
+    ) {
+      this.members = backup.members;
+      this.lastKnownSavedAt = backup.savedAt;
+      this.writeAtomicJson(this.filePath, {
+        version: 1,
+        savedAt: backup.savedAt || new Date().toISOString(),
+        members: this.members,
+      });
+      this.lastKnownMtimeMs = this.readFileMtimeMs(this.filePath);
+      return [...this.members];
+    }
+
+    if (!primary) {
+      this.members = [];
+      this.lastKnownSavedAt = '';
+      this.lastKnownMtimeMs = 0;
+      return [];
+    }
+
+    this.members = primary.members;
+    this.lastKnownSavedAt = primary.savedAt;
+    this.lastKnownMtimeMs = this.readFileMtimeMs(this.filePath);
+    return [...this.members];
+  }
+
+  private syncFromDiskIfChanged(): void {
+    const diskMtime = this.readFileMtimeMs(this.filePath);
+    if (diskMtime === this.lastKnownMtimeMs) return;
+    const prevJson = JSON.stringify(this.members);
+    this.reload();
+    if (JSON.stringify(this.members) !== prevJson) {
+      const snapshot = [...this.members];
+      for (const listener of this.listeners) {
+        listener(snapshot);
+      }
+    }
   }
 
   public list(): readonly FamilyMember[] {
+    this.syncFromDiskIfChanged();
     return [...this.members];
   }
 
   public listEnabled(): readonly FamilyMember[] {
+    this.syncFromDiskIfChanged();
     return this.members.filter((member) => member.enabled);
   }
 
   public get(id: string): FamilyMember | undefined {
+    this.syncFromDiskIfChanged();
     return this.members.find((member) => member.id === id);
   }
 
@@ -318,13 +407,53 @@ export class MemberRegistry {
     return created;
   }
 
+  private writeAtomicJson(targetPath: string, data: unknown): void {
+    const tempPath = `${targetPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const payload = JSON.stringify(data, null, 2);
+    writeFileSync(tempPath, `${payload}\n`, 'utf8');
+    renameSync(tempPath, targetPath);
+  }
+
   private persistAndNotify(): void {
     mkdirSync(this.storageDir, { recursive: true });
-    const tempPath = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
-    const payload = JSON.stringify({ version: 1, members: this.members }, null, 2);
-    writeFileSync(tempPath, `${payload}\n`, 'utf8');
-    renameSync(tempPath, this.filePath);
-    const snapshot = this.list();
+    mkdirSync(this.backupDir, { recursive: true });
+
+    const nowIso = new Date().toISOString();
+    const savedAt =
+      this.lastKnownSavedAt && nowIso <= this.lastKnownSavedAt
+        ? new Date(Date.parse(this.lastKnownSavedAt) + 1).toISOString()
+        : nowIso;
+    this.lastKnownSavedAt = savedAt;
+
+    const envelope = {
+      version: 1,
+      savedAt,
+      members: this.members,
+    };
+
+    this.writeAtomicJson(this.filePath, envelope);
+    this.lastKnownMtimeMs = this.readFileMtimeMs(this.filePath);
+
+    try {
+      this.writeAtomicJson(this.latestBackupPath, envelope);
+      const stamp = savedAt.replace(/[:.]/gu, '-');
+      const historyPath = join(this.backupDir, `members-${stamp}.json`);
+      this.writeAtomicJson(historyPath, envelope);
+
+      const historyFiles = readdirSync(this.backupDir)
+        .filter((f) => f.startsWith('members-') && f.endsWith('.json'))
+        .sort();
+      while (historyFiles.length > 6) {
+        const oldest = historyFiles.shift();
+        if (oldest) {
+          unlinkSync(join(this.backupDir, oldest));
+        }
+      }
+    } catch {
+      // ignore backup write errors
+    }
+
+    const snapshot = [...this.members];
     for (const listener of this.listeners) {
       listener(snapshot);
     }
