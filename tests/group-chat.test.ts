@@ -353,4 +353,38 @@ describe('GroupChatEngine (Family Group Chat, Unread Delta, @Relay, [PASS], and 
 
     await hub.dispose();
   });
+
+  it('tracks room unreadCount accurately for background/member messages, persists read cursor, and clears on markRoomRead', async () => {
+    const driver = makeMockDriver(async (memberId) => {
+      if (memberId === 'arch-bro') return '大哥收到！';
+      if (memberId === 'fe-sis') return '妹妹也收到！';
+      return '[PASS]';
+    });
+
+    const hub1 = new FamilyHub({ registry, drivers: [driver], storageDir: tempDir });
+    const group1 = new GroupChatEngine(hub1, registry, tempDir);
+    hub1.attachGroupEngine(group1);
+
+    // 人类发 1 条，大哥 + 妹妹回 2 条 => 对人类而言应有 2 条未读新回复
+    const afterPost = await group1.postMessage({
+      scopeId: 'unread-scope',
+      groupId: 'family-main',
+      senderId: 'human',
+      senderName: '你',
+      content: '大家冒个泡',
+      cwd: tempDir,
+    });
+    expect(afterPost.unreadCount).toBe(2);
+
+    // 标记已读后，unreadCount 清零并持久化
+    const afterRead = group1.markRoomRead('unread-scope', 'family-main');
+    expect(afterRead.unreadCount).toBe(0);
+    await hub1.dispose();
+
+    const hub2 = new FamilyHub({ registry, drivers: [driver], storageDir: tempDir });
+    const group2 = new GroupChatEngine(hub2, registry, tempDir);
+    hub2.attachGroupEngine(group2);
+    expect(group2.getOrCreateMainRoom('unread-scope').unreadCount).toBe(0);
+    await hub2.dispose();
+  });
 });

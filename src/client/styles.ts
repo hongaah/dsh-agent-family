@@ -899,6 +899,76 @@ html.light .dshfam-root,
   gap: 8px;
 }
 
+.sh-unread-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--sh-emerald, #10b981);
+  color: #ffffff;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.dshfam-live-green-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.22);
+  display: inline-block;
+  flex-shrink: 0;
+  animation: sh-pulse 1.4s ease-in-out infinite;
+}
+
+.dshfam-split-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--sh-border);
+  background: var(--sh-sidebar);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.dshfam-split-pill {
+  height: 27px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid var(--sh-border);
+  background: transparent;
+  color: var(--sh-muted-fg);
+  font-size: 12px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.dshfam-split-pill:hover {
+  background: var(--sh-accent);
+  color: var(--sh-fg);
+}
+
+.dshfam-split-pill[data-active="true"] {
+  background: var(--sh-card);
+  color: var(--sh-fg);
+  border-color: var(--sh-fg);
+  font-weight: 600;
+  box-shadow: var(--sh-shadow-sm);
+}
+
 @keyframes sh-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }

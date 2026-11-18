@@ -5,6 +5,7 @@ import type {
   BodyKind,
   BodyModelCatalog,
   CreateMemberInput,
+  FamilyFocusTarget,
   FamilyGroupRoom,
   FamilyMember,
   FamilyRealtimeEvent,
@@ -105,6 +106,8 @@ export function applyRealtimeEventToState(
         rooms: nextRooms,
       };
     }
+    case 'focus_requested':
+      return prev;
   }
 }
 
@@ -221,6 +224,19 @@ export const familyClientApi = {
       }
     );
   },
+  markRead(params: {
+    scopeId: string;
+    groupId?: string;
+    memberId?: string;
+  }): Promise<{ ok: boolean; room?: FamilyGroupRoom; snapshot?: MemberRuntimeSnapshot }> {
+    return requestJson<{ ok: boolean; room?: FamilyGroupRoom; snapshot?: MemberRuntimeSnapshot }>(
+      '/mark-read',
+      {
+        method: 'POST',
+        body: JSON.stringify(params),
+      }
+    );
+  },
   deleteGroup(
     scopeId: string,
     groupId: string
@@ -271,9 +287,22 @@ class FamilyLiveClientStore {
   private activeScopeId = 'default';
   private eventSource: EventSource | null = null;
   private readonly subscribers = new Set<() => void>();
+  private readonly focusListeners = new Set<
+    (scopeId: string, target: FamilyFocusTarget) => void
+  >();
 
   public getState(): FamilyBootstrapState {
     return this.state;
+  }
+
+  public subscribeFocus(
+    fn: (scopeId: string, target: FamilyFocusTarget) => void
+  ): () => void {
+    this.focusListeners.add(fn);
+    this.ensureStream();
+    return () => {
+      this.focusListeners.delete(fn);
+    };
   }
 
   public subscribe(fn: () => void): () => void {
@@ -281,7 +310,7 @@ class FamilyLiveClientStore {
     this.ensureStream();
     return () => {
       this.subscribers.delete(fn);
-      if (this.subscribers.size === 0 && this.eventSource) {
+      if (this.subscribers.size === 0 && this.focusListeners.size === 0 && this.eventSource) {
         this.eventSource.close();
         this.eventSource = null;
       }
@@ -306,6 +335,12 @@ class FamilyLiveClientStore {
     es.onmessage = (ev) => {
       try {
         const parsed = JSON.parse(ev.data) as FamilyRealtimeEvent;
+        if (parsed.type === 'focus_requested') {
+          for (const fl of this.focusListeners) {
+            fl(parsed.scopeId, parsed.target);
+          }
+          return;
+        }
         this.state = applyRealtimeEventToState(this.state, parsed);
         this.notify();
       } catch {

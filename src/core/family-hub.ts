@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { formatAvatarPrefixForPrompt } from './avatar-utils.ts';
 import { resolveNodeExecutable } from './cli-locator.ts';
+import type { DshSessionContextBridge } from './dsh-context-bridge.ts';
 import type { MemberRegistry } from './member-registry.ts';
 import { composeAwakeningSoul } from './soul-composer.ts';
 import type {
@@ -35,6 +36,7 @@ interface MemberActor {
   state: MemberActivityState;
   statusText?: string;
   entries: MemberChatEntry[];
+  lastHumanReadCount: number;
   lastActiveAt?: string;
   queueTail: Promise<void>;
   queueLength: number;
@@ -106,6 +108,7 @@ export class FamilyHub {
   private readonly storageDir?: string;
   private phoneBus: FamilyPhoneBus | null = null;
   private groupEngine: GroupChatEngine | null = null;
+  private contextBridge: DshSessionContextBridge | null = null;
 
   public constructor(options: {
     readonly registry: MemberRegistry;
@@ -135,6 +138,10 @@ export class FamilyHub {
 
   public attachGroupEngine(engine: GroupChatEngine): void {
     this.groupEngine = engine;
+  }
+
+  public attachContextBridge(bridge: DshSessionContextBridge): void {
+    this.contextBridge = bridge;
   }
 
   public getGroupEngine(): GroupChatEngine | null {
@@ -220,13 +227,27 @@ export class FamilyHub {
   public clearMemberEntries(scopeId: string, memberId: string): MemberRuntimeSnapshot {
     const actor = this.ensureActor(scopeId, memberId, process.cwd());
     actor.entries = [];
+    actor.lastHumanReadCount = 0;
     this.persistFeedsToDisk();
     const snap = this.toSnapshot(actor);
     this.emit({ type: 'member_runtime', snapshot: snap });
     return snap;
   }
 
+  public markMemberRead(scopeId: string, memberId: string): MemberRuntimeSnapshot {
+    const actor = this.ensureActor(scopeId, memberId, process.cwd());
+    if (actor.lastHumanReadCount !== actor.entries.length) {
+      actor.lastHumanReadCount = actor.entries.length;
+      this.persistFeedsToDisk();
+      const snap = this.toSnapshot(actor);
+      this.emit({ type: 'member_runtime', snapshot: snap });
+      return snap;
+    }
+    return this.toSnapshot(actor);
+  }
+
   public async resetMemberSession(scopeId: string, memberId: string): Promise<void> {
+    this.contextBridge?.resetMemberCursor(scopeId, memberId);
     const actor = this.actors.get(this.actorKey(scopeId, memberId));
     if (!actor) return;
     actor.activeAbort?.abort();
@@ -315,6 +336,7 @@ export class FamilyHub {
         actor.session = null;
         actor.awakenedBody = undefined;
         actor.needsReawaken = false;
+        this.contextBridge?.resetMemberCursor(input.scopeId, member.id);
         await previous.dispose().catch(() => undefined);
       }
 
@@ -344,6 +366,9 @@ export class FamilyHub {
           content: input.displayMessage ?? input.message,
           createdAt: new Date().toISOString(),
         });
+        if (input.senderRole === 'human') {
+          actor.lastHumanReadCount = actor.entries.length;
+        }
       }
 
       const replyEntryId = randomUUID();
@@ -397,10 +422,16 @@ export class FamilyHub {
           }
         }
 
+        const sessionBriefing =
+          this.contextBridge?.buildIncrementalBriefing(input.scopeId, member.id) ?? '';
+        const effectivePrompt = sessionBriefing
+          ? `${sessionBriefing}\n\n${input.message}`
+          : input.message;
+
         let streamedText = '';
         let finalText = '';
 
-        for await (const ev of actor.session.sendTurn(input.message, turnController.signal)) {
+        for await (const ev of actor.session.sendTurn(effectivePrompt, turnController.signal)) {
           if (ev.kind === 'text_delta') {
             streamedText += ev.delta;
             input.onDelta?.(streamedText, ev.delta);
@@ -534,6 +565,13 @@ export class FamilyHub {
           ]
         : [];
     return ['【智能体家庭通讯录】', ...lines, ...roomLines].join('\n');
+  }
+
+  public handlePhoneReadDshSession(scopeId: string, maxItems: number = 12): string {
+    if (!this.contextBridge) {
+      return '当前环境未挂载 DSH 主会话上下文桥接服务。';
+    }
+    return this.contextBridge.readRecentTranscript(scopeId, maxItems);
   }
 
   public async handlePhoneCall(params: {
@@ -841,6 +879,7 @@ export class FamilyHub {
       cwd,
       state: 'sleeping',
       entries: [],
+      lastHumanReadCount: 0,
       queueTail: Promise.resolve(),
       queueLength: 0,
       activeAbort: null,
@@ -856,7 +895,11 @@ export class FamilyHub {
   }
 
   private appendEntry(actor: MemberActor, entry: MemberChatEntry): void {
+    const overflow = Math.max(0, actor.entries.length + 1 - 80);
     actor.entries = [...actor.entries.slice(-79), entry];
+    if (overflow > 0) {
+      actor.lastHumanReadCount = Math.max(0, actor.lastHumanReadCount - overflow);
+    }
   }
 
   private updateEntry(
@@ -903,6 +946,14 @@ export class FamilyHub {
   }
 
   private toSnapshot(actor: MemberActor): MemberRuntimeSnapshot {
+    const start = Math.max(0, Math.min(actor.lastHumanReadCount, actor.entries.length));
+    let unreadCount = 0;
+    for (let i = start; i < actor.entries.length; i += 1) {
+      const item = actor.entries[i];
+      if (item && item.role !== 'human' && !item.streaming) {
+        unreadCount += 1;
+      }
+    }
     return {
       scopeId: actor.scopeId,
       memberId: actor.memberId,
@@ -911,6 +962,7 @@ export class FamilyHub {
       cwd: actor.cwd,
       queueLength: actor.queueLength,
       entries: [...actor.entries],
+      unreadCount,
       lastActiveAt: actor.lastActiveAt,
     };
   }
@@ -921,7 +973,12 @@ export class FamilyHub {
       mkdirSync(this.storageDir, { recursive: true });
       const filePath = join(this.storageDir, 'member-feeds.json');
       const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-      const records: Array<{ scopeId: string; memberId: string; entries: MemberChatEntry[] }> = [];
+      const records: Array<{
+        scopeId: string;
+        memberId: string;
+        entries: MemberChatEntry[];
+        lastHumanReadCount?: number;
+      }> = [];
       for (const actor of this.actors.values()) {
         const cleanEntries = actor.entries
           .filter((e) => !e.streaming)
@@ -931,6 +988,7 @@ export class FamilyHub {
             scopeId: actor.scopeId,
             memberId: actor.memberId,
             entries: cleanEntries,
+            lastHumanReadCount: Math.min(cleanEntries.length, actor.lastHumanReadCount),
           });
         }
       }
@@ -963,6 +1021,10 @@ export class FamilyHub {
           (item): item is MemberChatEntry =>
             Boolean(item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string')
         );
+        actor.lastHumanReadCount =
+          typeof rec.lastHumanReadCount === 'number'
+            ? Math.max(0, Math.min(actor.entries.length, rec.lastHumanReadCount))
+            : actor.entries.length;
       }
     } catch {
       // ignore

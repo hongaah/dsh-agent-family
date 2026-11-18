@@ -1,16 +1,68 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
+import type { FamilyFocusTarget } from '../core/types.ts';
 import { ApprovalBanner } from './ApprovalBanner.tsx';
-import { useFamilyLiveState } from './api.ts';
+import { familyLiveStore, useFamilyLiveState } from './api.ts';
 import { FamilyToolCard } from './FamilyToolCard.tsx';
-import { FamilyWorkbench, type SessionSummaryOption } from './FamilyWorkbench.tsx';
+import {
+  type FamilyNavigationOrder,
+  FamilyWorkbench,
+  type SessionSummaryOption,
+} from './FamilyWorkbench.tsx';
 import { ensureFamilyStyles } from './styles.ts';
 
 export const name = 'dsh-agent-family';
 export const PANEL_ID = 'dsh-agent-family';
+export const RIGHT_TAB_ID = 'dsh-agent-family/tab';
+export const RIGHT_TAB_KIND = 'agent-family';
 export const LOCALE_NS = 'dshAgentFamily';
 
 export const inject = ['slots', 'locale', 'sessions'];
+
+interface SidebarRightTabInfo {
+  readonly tab: {
+    readonly id: string;
+    readonly visible?: boolean;
+    readonly navigation?: {
+      readonly params?: Record<string, unknown>;
+      readonly revision?: number;
+    };
+  };
+  readonly panel: {
+    readonly id: string;
+    readonly isFloating?: boolean;
+  };
+}
+
+interface SidebarRightService {
+  readonly mounted?: {
+    getSnapshot(): string | undefined;
+    subscribe(fn: () => void): () => void;
+  };
+  openTab(
+    kind: string,
+    options?: {
+      readonly destination?: 'sidebar' | 'float';
+      readonly params?: Record<string, unknown>;
+    }
+  ): void;
+}
+
+interface SidebarRightTabsRegistry {
+  register(definition: {
+    readonly id: string;
+    readonly kind: string;
+    readonly title: () => string;
+    readonly keepMounted?: boolean;
+    readonly guide?: ReadonlyArray<{
+      readonly id: string;
+      readonly order: number;
+      readonly title: () => string;
+      readonly description: () => string;
+      readonly icon: unknown;
+    }>;
+  }): () => void;
+}
 
 interface ClientRuntimeContext {
   readonly locale: {
@@ -41,6 +93,8 @@ interface ClientRuntimeContext {
       getSnapshot(): { readonly activePanelId: string | null };
     };
   };
+  readonly sidebarRight?: SidebarRightService;
+  readonly sidebarRightTabs?: SidebarRightTabsRegistry;
   inject(deps: readonly string[], callback: (scoped: ClientRuntimeContext) => void | (() => void)): () => void;
   effect(fn: () => (() => void) | Generator<() => void, void, unknown>, label?: string): () => void;
 }
@@ -54,6 +108,53 @@ const enDict: Record<string, string> = {
   panel: 'Agent Family',
   settingsNav: 'Agent Family',
 };
+
+class FamilyNavigationBridge {
+  private lastExternalSessionId: string | undefined;
+  private latestOrder: FamilyNavigationOrder | null = null;
+  private seq = 0;
+  private readonly listeners = new Set<() => void>();
+
+  public setExternalSession(sessionId: string | undefined): void {
+    if (sessionId && !sessionId.startsWith('family-')) {
+      this.lastExternalSessionId = sessionId;
+    }
+  }
+
+  public getExternalSession(): string | undefined {
+    return this.lastExternalSessionId;
+  }
+
+  public getOrder(): FamilyNavigationOrder | null {
+    return this.latestOrder;
+  }
+
+  public dispatch(scopeId: string, target: FamilyFocusTarget): FamilyNavigationOrder {
+    if (scopeId && !scopeId.startsWith('family-')) {
+      this.lastExternalSessionId = scopeId;
+    }
+    this.seq += 1;
+    const order: FamilyNavigationOrder = {
+      scopeId,
+      target,
+      seq: this.seq,
+    };
+    this.latestOrder = order;
+    for (const l of this.listeners) {
+      l();
+    }
+    return order;
+  }
+
+  public subscribe(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => {
+      this.listeners.delete(fn);
+    };
+  }
+}
+
+const navBridge = new FamilyNavigationBridge();
 
 function FamilySidebarIcon({ size = 16 }: { readonly size?: number }): React.ReactElement {
   return (
@@ -94,38 +195,89 @@ function readSessionsList(ctx: ClientRuntimeContext): SessionSummaryOption[] {
     }));
 }
 
+function parseNavParamsToTarget(params?: Record<string, unknown>): FamilyFocusTarget {
+  if (params?.kind === 'member' && typeof params.memberId === 'string' && params.memberId) {
+    return { kind: 'member', memberId: params.memberId };
+  }
+  const groupId =
+    typeof params?.groupId === 'string' && params.groupId ? params.groupId : 'family-main';
+  return { kind: 'group', groupId };
+}
+
 function ComposerFamilyQuickBar({
   sessionId,
-  onOpenPanel,
+  onOpenForSession,
 }: {
   readonly sessionId: string;
-  readonly onOpenPanel: () => void;
+  readonly onOpenForSession: (sessionId: string, target: FamilyFocusTarget) => void;
 }): React.ReactElement {
   const { state } = useFamilyLiveState(sessionId);
+
+  useEffect(() => {
+    navBridge.setExternalSession(sessionId);
+  }, [sessionId]);
+
   const enabledCount = state.members.filter((m) => m.enabled).length;
-  const approvals = state.pendingApprovals;
+  const scopedApprovals = useMemo(
+    () => state.pendingApprovals.filter((a) => a.scopeId === sessionId),
+    [state.pendingApprovals, sessionId]
+  );
+
+  const { isSessionActive, activeLabel, totalUnread } = useMemo(() => {
+    const rooms = state.rooms.filter((r) => r.scopeId === sessionId);
+    const snaps = state.snapshots.filter((s) => s.scopeId === sessionId);
+
+    const runningRoom = rooms.find((r) => r.running);
+    const activeSnap = snaps.find(
+      (s) => s.state === 'working' || s.state === 'in_call' || s.state === 'awaiting_approval'
+    );
+    const activeMemberName = activeSnap
+      ? state.members.find((m) => m.id === activeSnap.memberId)?.name ?? activeSnap.memberId
+      : '';
+
+    const unreadRooms = rooms.reduce((sum, r) => sum + (r.unreadCount ?? 0), 0);
+    const unreadMembers = snaps.reduce((sum, s) => sum + (s.unreadCount ?? 0), 0);
+
+    return {
+      isSessionActive: Boolean(runningRoom || activeSnap),
+      activeLabel: runningRoom
+        ? runningRoom.activeSpeakerId
+          ? `${state.members.find((m) => m.id === runningRoom.activeSpeakerId)?.name ?? runningRoom.activeSpeakerId}发言中`
+          : '群聊进行中'
+        : activeMemberName
+          ? `${activeMemberName}执行中`
+          : '',
+      totalUnread: unreadRooms + unreadMembers,
+    };
+  }, [state.rooms, state.snapshots, state.members, sessionId]);
 
   return (
     <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 4 }}>
-      {approvals.length > 0 && <ApprovalBanner approvals={approvals} compact />}
+      {scopedApprovals.length > 0 && <ApprovalBanner approvals={scopedApprovals} compact />}
       <button
         type="button"
-        onClick={onOpenPanel}
+        onClick={() => onOpenForSession(sessionId, { kind: 'group', groupId: 'family-main' })}
         className="dshfam-chip"
-        title="打开智能体家庭客厅与成员工坊（输入 @成员ID 可直接点名）"
+        title="在当前会话旁打开智能体家庭群聊（也可在输入框敲 /family 或 /成员ID 直接指派）"
         style={{
           display: 'inline-flex',
           alignItems: 'center',
-          gap: 5,
-          padding: '3px 9px',
+          gap: 6,
+          padding: '3px 10px',
           fontSize: 12,
-          ...(approvals.length > 0
-            ? { borderColor: '#d97706', color: '#d97706', fontWeight: 700 }
-            : {}),
+          ...(scopedApprovals.length > 0
+            ? { borderColor: '#d97706', color: '#d97706', fontWeight: 600 }
+            : isSessionActive
+              ? { borderColor: 'rgba(16, 185, 129, 0.5)', fontWeight: 600 }
+              : {}),
         }}
       >
-        <span>🏠 家庭 ({enabledCount})</span>
-        {approvals.length > 0 && <span>· 🙋 {approvals.length} 待批示</span>}
+        {isSessionActive ? <span className="dshfam-live-green-dot" /> : <span>🏠</span>}
+        <span>
+          {isSessionActive && activeLabel ? `家庭 · ${activeLabel}` : `家庭 (${enabledCount})`}
+        </span>
+        {totalUnread > 0 && <span className="sh-unread-badge">{totalUnread}</span>}
+        {scopedApprovals.length > 0 && <span>· 🙋 {scopedApprovals.length} 待批示</span>}
       </button>
     </div>
   );
@@ -141,11 +293,11 @@ function FamilySettingsSummary({
     <div className="dshfam-toolcard" style={{ padding: 16 }}>
       <div style={{ fontSize: 14, fontWeight: 700 }}>智能体家庭 (dsh-agent-family)</div>
       <div style={{ fontSize: 12.5, opacity: 0.78, lineHeight: 1.55 }}>
-        当前已登记 {state.members.length} 位家庭成员，本机已就绪{' '}
-        {state.bodies.filter((b) => b.available).length} 具 CLI 身体。所有成员大脑记忆与操作审批均遵循对应 CLI 自身意志。
+        当前已登记 {state.members.length} 位家庭成员。在任意对话中输入 <code>/family</code> 或{' '}
+        <code>/成员ID</code> 即可主动指派，点击输入框旁「家庭」按钮可在对话右侧并排开启群聊。
       </div>
       <div>
-        <button type="button" className="dshfam-btn dshfam-btn-primary" onClick={onOpenPanel}>
+        <button type="button" className="sh-btn sh-btn-primary" onClick={onOpenPanel}>
           打开「智能体家庭」工作台管理成员与群聊
         </button>
       </div>
@@ -162,6 +314,8 @@ export function apply(ctx: ClientRuntimeContext): void {
   const t = ctx.locale.bind(LOCALE_NS);
 
   let layoutRef: ClientRuntimeContext['layout'];
+  let sidebarRightRef: SidebarRightService | undefined;
+
   ctx.inject(['layout'], (scoped) => {
     layoutRef = scoped.layout;
     scoped.effect(
@@ -175,7 +329,31 @@ export function apply(ctx: ClientRuntimeContext): void {
     );
   });
 
-  const openFamilyPanel = () => {
+  const openFullscreenFamily = (scopeId?: string, target?: FamilyFocusTarget) => {
+    const resolvedScope = scopeId ?? navBridge.getExternalSession() ?? readSessionsList(ctx)[0]?.id ?? 'default';
+    navBridge.dispatch(resolvedScope, target ?? { kind: 'group', groupId: 'family-main' });
+    layoutRef?.selectPanel(PANEL_ID);
+  };
+
+  const openFamilyForConversation = (
+    sessionId: string,
+    target: FamilyFocusTarget = { kind: 'group', groupId: 'family-main' }
+  ) => {
+    navBridge.dispatch(sessionId, target);
+    if (sidebarRightRef) {
+      try {
+        sidebarRightRef.openTab(RIGHT_TAB_KIND, {
+          destination: 'sidebar',
+          params:
+            target.kind === 'member'
+              ? { kind: 'member', memberId: target.memberId }
+              : { kind: 'group', groupId: target.groupId },
+        });
+        return;
+      } catch {
+        // 若当前布局不支持右侧栏打开则平滑回退到全屏工作台并自动同步 sessionId
+      }
+    }
     layoutRef?.selectPanel(PANEL_ID);
   };
 
@@ -183,8 +361,40 @@ export function apply(ctx: ClientRuntimeContext): void {
     layoutRef?.selectPanel(null);
   };
 
-  function ConnectedWorkbench(): React.ReactElement {
+  // 监听宿主 `/` 斜杠命令触发的 focus_requested 事件，自动滑开当前对话右侧的家庭分栏
+  ctx.effect(
+    () =>
+      familyLiveStore.subscribeFocus((scopeId, target) => {
+        navBridge.dispatch(scopeId, target);
+        const onScreenSession = sidebarRightRef?.mounted?.getSnapshot();
+        if (sidebarRightRef && (!onScreenSession || onScreenSession === scopeId)) {
+          try {
+            sidebarRightRef.openTab(RIGHT_TAB_KIND, {
+              destination: 'sidebar',
+              params:
+                target.kind === 'member'
+                  ? { kind: 'member', memberId: target.memberId }
+                  : { kind: 'group', groupId: target.groupId },
+            });
+          } catch {
+            // ignore if session not currently on screen
+          }
+        }
+      }),
+    'dsh-agent-family: slash-focus-listener'
+  );
+
+  // 全屏工作台组件：自动同步外部最近活跃会话与目标群聊
+  function ConnectedFullscreenWorkbench(): React.ReactElement {
     const [sessions, setSessions] = useState<SessionSummaryOption[]>(() => readSessionsList(ctx));
+    const [navOrder, setNavOrder] = useState<FamilyNavigationOrder | null>(() => {
+      const existing = navBridge.getOrder();
+      if (existing) return existing;
+      const ext = navBridge.getExternalSession();
+      return ext
+        ? { scopeId: ext, target: { kind: 'group', groupId: 'family-main' }, seq: 1 }
+        : null;
+    });
 
     useEffect(() => {
       const listSource = ctx.sessions?.list;
@@ -194,10 +404,141 @@ export function apply(ctx: ClientRuntimeContext): void {
       return listSource.subscribe(sync);
     }, []);
 
-    return <FamilyWorkbench sessions={sessions} onBackToConversation={backToConversation} />;
+    useEffect(() => {
+      return navBridge.subscribe(() => {
+        setNavOrder(navBridge.getOrder());
+      });
+    }, []);
+
+    return (
+      <FamilyWorkbench
+        mode="fullscreen"
+        sessions={sessions}
+        navigationOrder={navOrder}
+        onBackToConversation={backToConversation}
+      />
+    );
   }
 
-  // 1. 左侧栏一级常驻入口 + 主工作区面板
+  // 右侧同屏分栏 Tab 正文组件：天然一对一锁定宿主会话 sessionId
+  function ConnectedSplitTabBody(props: {
+    readonly sessionId: string;
+    readonly useTabInfo: () => SidebarRightTabInfo;
+  }): React.ReactElement {
+    const { tab } = props.useTabInfo();
+    const [sessions, setSessions] = useState<SessionSummaryOption[]>(() => readSessionsList(ctx));
+    const [navOrder, setNavOrder] = useState<FamilyNavigationOrder | null>(() => {
+      const existing = navBridge.getOrder();
+      if (existing?.scopeId === props.sessionId) return existing;
+      return {
+        scopeId: props.sessionId,
+        target: parseNavParamsToTarget(tab.navigation?.params),
+        seq: tab.navigation?.revision ?? 1,
+      };
+    });
+
+    useEffect(() => {
+      navBridge.setExternalSession(props.sessionId);
+    }, [props.sessionId]);
+
+    useEffect(() => {
+      if (!tab.navigation?.revision) return;
+      setNavOrder({
+        scopeId: props.sessionId,
+        target: parseNavParamsToTarget(tab.navigation.params),
+        seq: 10000 + tab.navigation.revision,
+      });
+    }, [props.sessionId, tab.navigation?.revision, tab.navigation?.params]);
+
+    useEffect(() => {
+      return navBridge.subscribe(() => {
+        const latest = navBridge.getOrder();
+        if (latest?.scopeId === props.sessionId) {
+          setNavOrder(latest);
+        }
+      });
+    }, [props.sessionId]);
+
+    useEffect(() => {
+      const listSource = ctx.sessions?.list;
+      if (!listSource) return;
+      const sync = () => setSessions(readSessionsList(ctx));
+      sync();
+      return listSource.subscribe(sync);
+    }, []);
+
+    return (
+      <FamilyWorkbench
+        mode="split"
+        lockedScopeId={props.sessionId}
+        isVisible={tab.visible !== false}
+        sessions={sessions}
+        navigationOrder={navOrder}
+        onBackToConversation={backToConversation}
+        onExpandFullscreen={(scopeId, currentTarget) => openFullscreenFamily(scopeId, currentTarget)}
+      />
+    );
+  }
+
+  // 0. 注册 DSH 原生右侧同屏停靠栏 Tab (`@deepseek-ai/dsh-client-ui-sidebar-right`)
+  ctx.inject(['sidebarRightTabs', 'sidebarRight'], (scoped) => {
+    sidebarRightRef = scoped.sidebarRight;
+    const mountedSource = scoped.sidebarRight?.mounted;
+    if (mountedSource) {
+      scoped.effect(() => {
+        const syncMounted = () => {
+          const current = mountedSource.getSnapshot();
+          if (current) navBridge.setExternalSession(current);
+        };
+        syncMounted();
+        return mountedSource.subscribe(syncMounted);
+      }, 'dsh-agent-family: track-mounted-session');
+    }
+
+    scoped.effect(
+      () =>
+        scoped.sidebarRightTabs!.register({
+          id: RIGHT_TAB_ID,
+          kind: RIGHT_TAB_KIND,
+          title: () => t('panel'),
+          keepMounted: true,
+          guide: [
+            {
+              id: 'agent-family',
+              order: 35,
+              title: () => t('panel'),
+              description: () => '在当前对话右侧同屏开启家庭群聊与成员协作',
+              icon: FamilySidebarIcon,
+            },
+          ],
+        }),
+      'dsh-agent-family: right-tab-type'
+    );
+
+    scoped.effect(
+      () =>
+        scoped.slots.inject('sidebar.right.pane.tab', () =>
+          scoped.slots.register(
+            {
+              name: 'sidebar.right.pane.tab',
+              key: RIGHT_TAB_ID,
+              locale: LOCALE_NS,
+            },
+            ConnectedSplitTabBody
+          )
+        ),
+      'dsh-agent-family: right-tab-body'
+    );
+
+    scoped.effect(
+      () => () => {
+        sidebarRightRef = undefined;
+      },
+      'dsh-agent-family: right-sidebar-cleanup'
+    );
+  });
+
+  // 1. 左侧栏一级常驻入口 + 全屏主工作区面板
   ctx.slots.inject('main', () =>
     ctx.slots.register(
       {
@@ -205,7 +546,7 @@ export function apply(ctx: ClientRuntimeContext): void {
         key: PANEL_ID,
         locale: LOCALE_NS,
       },
-      ConnectedWorkbench
+      ConnectedFullscreenWorkbench
     )
   );
 
@@ -222,7 +563,7 @@ export function apply(ctx: ClientRuntimeContext): void {
     )
   );
 
-  // 2. 主聊天输入框旁家庭快捷入口 + 实时「成员举手请求批示」内联提醒
+  // 2. 主聊天输入框旁家庭状态胶囊（活跃呼吸绿点 + 未读数角标 + 点击同屏展开当前会话群聊）
   ctx.slots.inject('conversation.input.left', () =>
     ctx.slots.register(
       {
@@ -233,7 +574,12 @@ export function apply(ctx: ClientRuntimeContext): void {
       },
       (props: { readonly sessionId?: string }) => {
         if (!props.sessionId) return null;
-        return <ComposerFamilyQuickBar sessionId={props.sessionId} onOpenPanel={openFamilyPanel} />;
+        return (
+          <ComposerFamilyQuickBar
+            sessionId={props.sessionId}
+            onOpenForSession={openFamilyForConversation}
+          />
+        );
       }
     )
   );
@@ -257,7 +603,12 @@ export function apply(ctx: ClientRuntimeContext): void {
             sessionId={props.sessionId}
             toolName={props.toolName}
             block={props.block}
-            onOpenWorkbench={openFamilyPanel}
+            onOpenWorkbench={() =>
+              openFamilyForConversation(props.sessionId, {
+                kind: 'group',
+                groupId: 'family-main',
+              })
+            }
           />
         )
       );
@@ -273,7 +624,9 @@ export function apply(ctx: ClientRuntimeContext): void {
         locale: LOCALE_NS,
       },
       (owner: { readonly view?: string } = {}) =>
-        owner.view === 'summary' ? null : <FamilySettingsSummary onOpenPanel={openFamilyPanel} />
+        owner.view === 'summary' ? null : (
+          <FamilySettingsSummary onOpenPanel={() => openFullscreenFamily()} />
+        )
     )
   );
 
@@ -296,7 +649,7 @@ export function apply(ctx: ClientRuntimeContext): void {
         label: () => t('settingsNav'),
         locale: LOCALE_NS,
       },
-      () => <FamilySettingsSummary onOpenPanel={openFamilyPanel} />
+      () => <FamilySettingsSummary onOpenPanel={() => openFullscreenFamily()} />
     )
   );
 }

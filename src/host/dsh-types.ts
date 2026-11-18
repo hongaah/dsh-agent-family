@@ -251,10 +251,42 @@ export interface DshHostEventMap {
   'subagent/end': (info: DshSubagentEndInfo) => void;
 }
 
+export interface DshCommandInvocation {
+  readonly commandId: string;
+  readonly agent: DshAgentLike;
+  readonly rawInput: string;
+  readonly attachments?: readonly unknown[];
+  readonly signal: AbortSignal;
+}
+
+export interface DshCommandResult {
+  readonly kind: 'success' | 'error';
+  readonly text?: string;
+}
+
+export interface DshCommandDefinition {
+  readonly definitionId?: string;
+  readonly name: string;
+  readonly description: string;
+  readonly input?: {
+    readonly hint: string;
+    readonly attachments?: boolean;
+  };
+  readonly recordInput?: boolean;
+  readonly handler: (
+    invocation: DshCommandInvocation
+  ) => DshCommandResult | Promise<DshCommandResult>;
+}
+
+export interface DshCommandsRegistry {
+  register(definition: DshCommandDefinition): () => void;
+}
+
 export interface DshHostContext {
   readonly webServer?: DshWebServer;
   readonly sessions: DshHostSessionStore;
   readonly tools: DshToolsRegistry;
+  readonly commands?: DshCommandsRegistry;
   readonly systemPrompt?: DshSystemPromptService;
   readonly logger?: {
     info(msg: string, ...args: unknown[]): void;
@@ -267,5 +299,6 @@ export interface DshHostContext {
     label?: string
   ): () => void;
   inject(deps: readonly string[], callback: (scoped: DshHostContext) => void | (() => void)): () => void;
+  plugin?(fn: (sub: DshHostContext) => void): { dispose(): void };
   on<K extends keyof DshHostEventMap>(event: K, listener: DshHostEventMap[K]): () => void;
 }

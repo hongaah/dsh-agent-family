@@ -491,4 +491,197 @@ describe('Cordis Host Plugin (Tools, SystemPrompt, @Mention Pre-Step, Web API & 
     expect(restrictedDeny).toContain('family_assign');
     expect(restrictedDeny).toContain('family_group_discuss');
   });
+
+  it('registers /family + dynamic /<memberId> slash commands, bridges incremental DSH session context, and feeds receipts back into main DSH pre-step', async () => {
+    const promptsReceived: string[] = [];
+    const registeredCommands = new Map<
+      string,
+      {
+        name: string;
+        description: string;
+        handler: (inv: {
+          commandId: string;
+          agent: { session: { id: string; seq: number; header: { cwd: string }; snapshotEvents: (from?: number) => unknown[] } };
+          rawInput: string;
+          signal: AbortSignal;
+        }) => Promise<{ kind: string; text?: string }>;
+      }
+    >();
+
+    const capturingDriver: BodyDriver = {
+      kind: 'claude',
+      awaken: async (ctx: AwakenMemberContext): Promise<LiveMemberSession> => ({
+        bodyKind: 'claude',
+        isAlive: () => true,
+        sendTurn: (prompt: string): AsyncIterable<MemberStreamEvent> => {
+          promptsReceived.push(prompt);
+          const q = new AsyncEventQueue<MemberStreamEvent>();
+          const reply = `[${ctx.member.name}已修复 Login.tsx 圆角]`;
+          q.push({ kind: 'text_delta', delta: reply });
+          q.push({ kind: 'turn_done', finalText: reply });
+          q.close();
+          return q;
+        },
+        replyApproval: async () => undefined,
+        dispose: async () => undefined,
+      }),
+    };
+
+    const mockSessionEvents = [
+      {
+        seq: 1,
+        type: 'user/message',
+        data: {
+          message: {
+            content: [{ type: 'text', text: '登录页面的提交按钮在暗色模式下看不清边框' }],
+          },
+        },
+      },
+      {
+        seq: 2,
+        type: 'tool/call',
+        data: {
+          name: 'str_replace_editor',
+          arguments: { path: 'src/components/Login.tsx' },
+        },
+      },
+      {
+        seq: 3,
+        type: 'assistant/message',
+        data: {
+          message: {
+            content: [{ type: 'text', text: '我定位到是 Login.tsx 第 42 行的 border 变量缺失。' }],
+          },
+        },
+      },
+    ];
+
+    const mockMainSession = {
+      id: 'dsh-main-sess-99',
+      get seq() {
+        return mockSessionEvents.length;
+      },
+      header: { cwd: tempDir, title: '修复暗色登录页' },
+      snapshotEvents: (fromSeq = 0) => mockSessionEvents.filter((e) => e.seq > fromSeq || fromSeq === 0),
+    };
+
+    const baseCtx = buildMockHostContext();
+    const cmdCtx: DshHostContext = {
+      ...baseCtx,
+      sessions: {
+        get: (id: string) => (id === 'dsh-main-sess-99' ? mockMainSession : { id, header: { cwd: tempDir } }),
+      },
+      commands: {
+        register: (def) => {
+          registeredCommands.set(def.name, def as never);
+          return () => {
+            registeredCommands.delete(def.name);
+          };
+        },
+      },
+    };
+
+    const plugin = createFamilyHostPlugin({
+      storageDir: tempDir,
+      customDrivers: [capturingDriver],
+    });
+    plugin.apply(cmdCtx);
+
+    httpServer = createServer((req, res) => {
+      const matched = routes.find((r) =>
+        r.kind === 'exact' ? req.url === r.path : (req.url ?? '').startsWith(r.path)
+      );
+      if (!matched) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      void matched.handler(req, res);
+    });
+    await new Promise<void>((r) => httpServer!.listen(0, '127.0.0.1', () => r()));
+    const port = (httpServer.address() as AddressInfo).port;
+    const base = `http://127.0.0.1:${port}`;
+
+    // 创建成员 fe-sis 后，应自动注册动态斜杠命令 /fe-sis 以及通用 /family、/family-group
+    await fetch(`${base}/dsh-agent-family/api/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: 'fe-sis',
+        name: '小前端',
+        specialty: '样式与组件修复',
+        body: { kind: 'claude' },
+        soulPrompt: '手速飞快',
+      }),
+    });
+
+    expect(registeredCommands.has('family')).toBe(true);
+    expect(registeredCommands.has('family-group')).toBe(true);
+    expect(registeredCommands.has('fe-sis')).toBe(true);
+
+    // 1. 用户在 DSH 对话中输入 `/fe-sis 帮我直接把那个按钮边框修好`
+    const feCmd = registeredCommands.get('fe-sis')!;
+    const cmdOut = await feCmd.handler({
+      commandId: 'cmd-1',
+      agent: { session: mockMainSession },
+      rawInput: ' 帮我直接把那个按钮边框修好',
+      signal: new AbortController().signal,
+    });
+    expect(cmdOut.kind).toBe('success');
+    expect(cmdOut.text).toContain('小前端');
+
+    // 验证小前端收到了精炼的 DSH 会话上下文增量简报（含用户原话、主对话结论、涉及文件 Login.tsx）
+    expect(promptsReceived[0]).toContain('暗色模式下看不清边框');
+    expect(promptsReceived[0]).toContain('src/components/Login.tsx');
+
+    // 2. 第二次再次通过 /fe-sis 追问（DSH 主会话无新增事件），已同步过的旧上下文不重复冗余注入！
+    await feCmd.handler({
+      commandId: 'cmd-2',
+      agent: { session: mockMainSession },
+      rawInput: ' 顺便检查一下 hover 态',
+      signal: new AbortController().signal,
+    });
+    expect(promptsReceived[1]).not.toContain('暗色模式下看不清边框');
+    expect(promptsReceived[1]).toContain('顺便检查一下 hover 态');
+
+    // 3. 验证双向闭环：回到主 DSH 对话发下一句话时，agent/pre-step 自动把刚才家庭成员的处理回执注入给 DSH 主模型知晓（且仅注入一次）
+    const preStep = preStepListeners[0]!;
+    const turnAfterSlash = await preStep(
+      {
+        agent: { session: mockMainSession },
+        step: 0,
+        signal: new AbortController().signal,
+        messages: [{ role: 'user', content: [{ type: 'text', text: '现在我们继续写单元测试吧' }] }],
+      },
+      async () => ({
+        kind: 'enter',
+        messages: [{ role: 'user', content: [{ type: 'text', text: '现在我们继续写单元测试吧' }] }],
+      })
+    );
+    expect(turnAfterSlash.kind).toBe('enter');
+    if (turnAfterSlash.kind === 'enter') {
+      const augmented = turnAfterSlash.messages[0]?.content[0]?.text ?? '';
+      expect(augmented).toContain('family_collaboration_receipt');
+      expect(augmented).toContain('小前端已修复 Login.tsx 圆角');
+    }
+
+    // 再下一轮不再重复注入已消费过的回执
+    const secondMainTurn = await preStep(
+      {
+        agent: { session: mockMainSession },
+        step: 0,
+        signal: new AbortController().signal,
+        messages: [{ role: 'user', content: [{ type: 'text', text: '好的' }] }],
+      },
+      async () => ({
+        kind: 'enter',
+        messages: [{ role: 'user', content: [{ type: 'text', text: '好的' }] }],
+      })
+    );
+    if (secondMainTurn.kind === 'enter') {
+      expect(secondMainTurn.messages[0]?.content[0]?.text ?? '').not.toContain(
+        'family_collaboration_receipt'
+      );
+    }
+  });
 });

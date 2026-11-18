@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 
 import { AvatarStore, formatAvatarPrefixForPrompt } from '../core/avatar-utils.ts';
 import { probeAllBodies } from '../core/cli-locator.ts';
+import { DshSessionContextBridge } from '../core/dsh-context-bridge.ts';
 import { FamilyHub } from '../core/family-hub.ts';
 import { extractMemberMentions, GroupChatEngine, MAIN_GROUP_ID } from '../core/group-chat.ts';
 import {
@@ -32,6 +33,9 @@ import type {
   DshAgentLike,
   DshAgentScopedContext,
   DshAgentsRegistry,
+  DshCommandInvocation,
+  DshCommandResult,
+  DshCommandsRegistry,
   DshConnectionService,
   DshHostContext,
   DshHttpRequest,
@@ -223,6 +227,10 @@ function registerScopedPhoneToolsOnDshAgent(
         const hub = getHub();
         if (schema.name === 'phone_contacts') {
           return hub.handlePhoneContacts(scopeId, memberId);
+        }
+        if (schema.name === 'phone_read_dsh_session') {
+          const limit = typeof args.limit === 'number' && Number.isFinite(args.limit) ? args.limit : 12;
+          return hub.handlePhoneReadDshSession(scopeId, limit);
         }
         if (schema.name === 'phone_call') {
           const rawIntent = typeof args.intent === 'string' ? args.intent : 'discuss';
@@ -591,6 +599,8 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
         storageDir,
       });
       hubRef = hub;
+      const contextBridge = new DshSessionContextBridge((sessionId) => ctx.sessions.get(sessionId));
+      hub.attachContextBridge(contextBridge);
       const groupEngine = new GroupChatEngine(hub, registry, storageDir);
       hub.attachGroupEngine(groupEngine);
 
@@ -677,10 +687,11 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
         );
       });
 
-      // 2. 注册面向主对话 Lead 的工具集
+      // 2. 注册面向主对话 Lead 的工具集与原生 `/` 斜杠命令
       registerFamilyTools(ctx, hub, groupEngine, registry, observedAgents, hasNativeDshAgents);
+      registerFamilySlashCommands(ctx, hub, groupEngine, registry, contextBridge, observedAgents);
 
-      // 3. 拦截 agent/pre-step：缓存活跃父 Agent，并识别用户输入中的 @成员ID 点名
+      // 3. 拦截 agent/pre-step：缓存活跃父 Agent、回流家庭协作回执，并识别用户输入中的 @成员ID 点名
       ctx.effect(
         () =>
           ctx.on(
@@ -698,40 +709,48 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
                 return decision;
               }
 
-              const enabledIds = new Set(registry.listEnabled().map((m) => m.id));
-              if (enabledIds.size === 0) return decision;
+              const pendingReceiptBlock = sessId
+                ? contextBridge.consumePendingReceipts(sessId)
+                : '';
 
+              const enabledIds = new Set(registry.listEnabled().map((m) => m.id));
               const mentioned: string[] = [];
-              for (const msg of decision.messages) {
-                if (msg.role && msg.role !== 'user') continue;
-                for (const block of msg.content) {
-                  if (block.type === 'text' && typeof block.text === 'string') {
-                    for (const id of extractMemberMentions(block.text, enabledIds)) {
-                      if (!mentioned.includes(id)) mentioned.push(id);
+              if (enabledIds.size > 0) {
+                for (const msg of decision.messages) {
+                  if (msg.role && msg.role !== 'user') continue;
+                  for (const block of msg.content) {
+                    if (block.type === 'text' && typeof block.text === 'string') {
+                      for (const id of extractMemberMentions(block.text, enabledIds)) {
+                        if (!mentioned.includes(id)) mentioned.push(id);
+                      }
                     }
                   }
                 }
               }
 
-              if (mentioned.length === 0) {
+              let routingHint = '';
+              if (mentioned.length > 0) {
+                const memberDescriptions = mentioned
+                  .map((id) => {
+                    const m = registry.get(id);
+                    return m ? `${m.name} (@${m.id})` : `@${id}`;
+                  })
+                  .join('、');
+
+                routingHint =
+                  mentioned.length === 1
+                    ? `\n\n<family_direct_mention>\n用户明确点名了家庭成员 ${memberDescriptions}。请立即调用 \`family_assign\` 将用户的完整诉求交由 \`${mentioned[0]}\` 处理，不要越俎代庖替其回答。\n</family_direct_mention>`
+                    : `\n\n<family_direct_mention>\n用户同时点名了多位家庭成员：${memberDescriptions}。如属并行独立任务请调用 \`family_assign\` 并发指派；如属方案会商请调用 \`family_group_discuss\` 拉起群聊讨论。\n</family_direct_mention>`;
+              }
+
+              const combinedNote = `${pendingReceiptBlock}${routingHint}`;
+              if (!combinedNote) {
                 return decision;
               }
 
-              const memberDescriptions = mentioned
-                .map((id) => {
-                  const m = registry.get(id);
-                  return m ? `${m.name} (@${m.id})` : `@${id}`;
-                })
-                .join('、');
-
-              const routingHint =
-                mentioned.length === 1
-                  ? `\n\n<family_direct_mention>\n用户明确点名了家庭成员 ${memberDescriptions}。请立即调用 \`family_assign\` 将用户的完整诉求交由 \`${mentioned[0]}\` 处理，不要越俎代庖替其回答。\n</family_direct_mention>`
-                  : `\n\n<family_direct_mention>\n用户同时点名了多位家庭成员：${memberDescriptions}。如属并行独立任务请调用 \`family_assign\` 并发指派；如属方案会商请调用 \`family_group_discuss\` 拉起群聊讨论。\n</family_direct_mention>`;
-
               return {
                 ...decision,
-                messages: appendHintToLastUserMessage(decision.messages, routingHint),
+                messages: appendHintToLastUserMessage(decision.messages, combinedNote),
               };
             }
           ),
@@ -761,6 +780,7 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
                   registry,
                   avatarStore,
                   modelCatalog,
+                  contextBridge,
                   hub,
                   groupEngine,
                   sseClients,
@@ -773,6 +793,270 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
       });
     },
   };
+}
+
+const RESERVED_SLASH_COMMANDS = new Set([
+  'goal',
+  'plan',
+  'model',
+  'compact',
+  'permission',
+  'feedback',
+  'export',
+  'file',
+  'family',
+  'family-group',
+  'team',
+  'help',
+  'clear',
+]);
+
+function registerFamilySlashCommands(
+  ctx: DshHostContext,
+  hub: FamilyHub,
+  groupEngine: GroupChatEngine,
+  registry: MemberRegistry,
+  contextBridge: DshSessionContextBridge,
+  observedAgents: Map<string, DshAgentLike>
+): void {
+  let mounted = false;
+
+  const mountOnRegistry = (
+    commandsSvc: DshCommandsRegistry
+  ):
+    | (() => void)
+    | {
+        readonly syncWithOwner: (ownerCtx?: DshHostContext) => void;
+        readonly cleanup: () => void;
+      } => {
+    if (mounted) return () => undefined;
+    mounted = true;
+
+    const dispatchToMember = async (
+      invocation: DshCommandInvocation,
+      memberId: string,
+      goal: string
+    ): Promise<DshCommandResult> => {
+      const scopeId = invocation.agent?.session?.id ?? 'default';
+      if (scopeId && !scopeId.startsWith('family-')) {
+        observedAgents.set(scopeId, invocation.agent);
+      }
+      const cwd = await resolveSessionCwd(ctx, scopeId);
+      const cleanGoal = goal.trim();
+      if (!cleanGoal) {
+        hub.emit({
+          type: 'focus_requested',
+          scopeId,
+          target: { kind: 'member', memberId },
+        });
+        return {
+          kind: 'success',
+          text: `已定位到家庭成员 @${memberId}。用法示例：/${memberId} <要解决的问题>`,
+        };
+      }
+
+      hub.emit({
+        type: 'focus_requested',
+        scopeId,
+        target: { kind: 'member', memberId },
+      });
+
+      try {
+        const res = await hub.sendMemberMessage({
+          scopeId,
+          memberId,
+          senderRole: 'human',
+          senderName: '你 (通过 / 指派)',
+          message: cleanGoal,
+          cwd,
+          signal: invocation.signal,
+        });
+        contextBridge.recordReceiptForMainAgent(
+          scopeId,
+          `${res.member.name} (@${res.member.id}) 已处理诉求「${cleanGoal.slice(0, 120)}」并回复：${res.finalText.slice(0, 420)}`
+        );
+        return {
+          kind: 'success',
+          text: `${res.member.name} (@${res.member.id})：\n${res.finalText}`,
+        };
+      } catch (err) {
+        return {
+          kind: 'error',
+          text: err instanceof Error ? err.message : String(err),
+        };
+      }
+    };
+
+    const dispatchToGroup = async (
+      invocation: DshCommandInvocation,
+      content: string
+    ): Promise<DshCommandResult> => {
+      const scopeId = invocation.agent?.session?.id ?? 'default';
+      if (scopeId && !scopeId.startsWith('family-')) {
+        observedAgents.set(scopeId, invocation.agent);
+      }
+      const cwd = await resolveSessionCwd(ctx, scopeId);
+      const cleanContent = content.trim();
+
+      hub.emit({
+        type: 'focus_requested',
+        scopeId,
+        target: { kind: 'group', groupId: MAIN_GROUP_ID },
+      });
+
+      if (!cleanContent) {
+        return {
+          kind: 'success',
+          text: '已打开当前会话的家庭总群。用法示例：/family-group <要在群里讨论的问题>',
+        };
+      }
+
+      const beforeRoom = groupEngine.getOrCreateMainRoom(scopeId);
+      const startIdx = beforeRoom.messages.length;
+      const updated = await groupEngine.postMessage({
+        scopeId,
+        groupId: MAIN_GROUP_ID,
+        senderId: 'human',
+        senderName: '你',
+        senderAvatar: '🧑‍💻',
+        content: cleanContent,
+        cwd,
+      });
+      const replies = updated.messages.slice(startIdx + 1);
+      const summaryLines = replies.map((m) => `${m.senderName} (@${m.senderId}): ${m.content}`);
+      if (summaryLines.length > 0) {
+        contextBridge.recordReceiptForMainAgent(
+          scopeId,
+          `家庭总群围绕「${cleanContent.slice(0, 100)}」完成讨论：\n${summaryLines.join('\n')}`
+        );
+      }
+      return {
+        kind: 'success',
+        text:
+          summaryLines.length > 0
+            ? `🏠 家庭总群讨论结果：\n${summaryLines.join('\n\n')}`
+            : '🏠 家庭总群已收到消息。',
+      };
+    };
+
+    const staticDisposers: Array<() => void> = [];
+    staticDisposers.push(
+      commandsSvc.register({
+        definitionId: 'dsh-agent-family:family',
+        name: 'family',
+        description: '唤起智能体家庭成员或群聊解决当前会话问题（如 /family @成员ID 问题描述）',
+        input: { hint: '[@成员ID | group] <要解决的问题>' },
+        handler: async (invocation) => {
+          const trimmed = invocation.rawInput.trim();
+          if (!trimmed) {
+            return dispatchToGroup(invocation, '');
+          }
+          if (/^group(?:\s+|$)/iu.test(trimmed)) {
+            return dispatchToGroup(invocation, trimmed.slice(5));
+          }
+          const directMatch = /^@?([a-z][a-z0-9-]{0,31})(?:\s+([\s\S]*))?$/u.exec(trimmed);
+          if (directMatch?.[1]) {
+            const candidate = registry.get(directMatch[1]);
+            if (candidate && candidate.enabled) {
+              return dispatchToMember(invocation, candidate.id, directMatch[2] ?? '');
+            }
+          }
+          return dispatchToGroup(invocation, trimmed);
+        },
+      })
+    );
+
+    staticDisposers.push(
+      commandsSvc.register({
+        definitionId: 'dsh-agent-family:family-group',
+        name: 'family-group',
+        description: '将问题抛入当前会话的家庭总群协作讨论（自动感知 DSH 上下文）',
+        input: { hint: '<要在家庭总群讨论的问题>' },
+        handler: (invocation) => dispatchToGroup(invocation, invocation.rawInput),
+      })
+    );
+
+    let dynamicMemberDisposers: Array<() => void> = [];
+    let dynamicFork: { dispose(): void } | null = null;
+
+    const registerDynamicOn = (targetSvc: DshCommandsRegistry) => {
+      for (const member of registry.listEnabled()) {
+        if (RESERVED_SLASH_COMMANDS.has(member.id)) continue;
+        try {
+          const disposeCmd = targetSvc.register({
+            definitionId: `dsh-agent-family:member:${member.id}`,
+            name: member.id,
+            description: `指派家庭成员「${member.name}」(${member.body.kind} · ${member.specialty}) 处理当前问题`,
+            input: { hint: `<交给${member.name}解决的问题>` },
+            handler: (invocation) =>
+              dispatchToMember(invocation, member.id, invocation.rawInput),
+          });
+          dynamicMemberDisposers.push(disposeCmd);
+        } catch {
+          // 若与外部其他插件命令重名则静默跳过，保留 /family @成员ID 可用
+        }
+      }
+    };
+
+    const syncMemberCommands = (ownerCtx?: DshHostContext) => {
+      dynamicFork?.dispose();
+      dynamicFork = null;
+      for (const d of dynamicMemberDisposers) {
+        try {
+          d();
+        } catch {
+          // ignore
+        }
+      }
+      dynamicMemberDisposers = [];
+
+      if (ownerCtx && typeof ownerCtx.plugin === 'function') {
+        dynamicFork = ownerCtx.plugin((sub) => {
+          if (sub.commands) {
+            registerDynamicOn(sub.commands);
+          }
+        });
+      } else {
+        registerDynamicOn(commandsSvc);
+      }
+    };
+
+    return {
+      syncWithOwner: (ownerCtx?: DshHostContext) => syncMemberCommands(ownerCtx),
+      cleanup: () => {
+        mounted = false;
+        dynamicFork?.dispose();
+        dynamicFork = null;
+        for (const d of dynamicMemberDisposers) d();
+        dynamicMemberDisposers = [];
+        for (const d of staticDisposers) d();
+      },
+    };
+  };
+
+  const attachScoped = (scoped: DshHostContext) => {
+    if (!scoped.commands) return;
+    const handle = mountOnRegistry(scoped.commands);
+    if (typeof handle === 'function') return;
+    handle.syncWithOwner(scoped);
+    const unsubRoster = registry.subscribe(() => {
+      handle.syncWithOwner(scoped);
+    });
+    scoped.effect(
+      () => () => {
+        unsubRoster();
+        handle.cleanup();
+      },
+      'dsh-agent-family: slash-commands-cleanup'
+    );
+  };
+
+  if (typeof ctx.plugin !== 'function' && ctx.commands) {
+    attachScoped(ctx);
+  }
+  ctx.inject(['commands'], (scoped) => {
+    attachScoped(scoped);
+  });
 }
 
 function registerFamilyTools(
@@ -1105,6 +1389,7 @@ async function handleWebApiRequest(params: {
   readonly registry: MemberRegistry;
   readonly avatarStore: AvatarStore;
   readonly modelCatalog: ModelCatalogService;
+  readonly contextBridge: DshSessionContextBridge;
   readonly hub: FamilyHub;
   readonly groupEngine: GroupChatEngine;
   readonly sseClients: Set<DshHttpResponse>;
@@ -1117,6 +1402,7 @@ async function handleWebApiRequest(params: {
     registry,
     avatarStore,
     modelCatalog,
+    contextBridge,
     hub,
     groupEngine,
     sseClients,
@@ -1285,10 +1571,33 @@ async function handleWebApiRequest(params: {
         cwd,
         fresh: body.fresh === true,
       });
+      if (scopeId !== 'default') {
+        contextBridge.recordReceiptForMainAgent(
+          scopeId,
+          `你在家庭面板与 ${outcome.member.name} (@${outcome.member.id}) 沟通了「${message.slice(0, 100)}」，结论：${outcome.finalText.slice(0, 360)}`
+        );
+      }
       writeJson(res, 200, {
         finalText: outcome.finalText,
         snapshot: hub.getMemberSnapshot(scopeId, memberId),
       });
+      return;
+    }
+
+    if (method === 'POST' && subPath === '/mark-read') {
+      const body = await readRequestJson(req);
+      const scopeId = typeof body.scopeId === 'string' && body.scopeId.trim() ? body.scopeId : 'default';
+      if (typeof body.groupId === 'string' && body.groupId.trim()) {
+        const room = groupEngine.markRoomRead(scopeId, body.groupId.trim());
+        writeJson(res, 200, { ok: true, room });
+        return;
+      }
+      if (typeof body.memberId === 'string' && body.memberId.trim()) {
+        const snapshot = hub.markMemberRead(scopeId, body.memberId.trim());
+        writeJson(res, 200, { ok: true, snapshot });
+        return;
+      }
+      writeJson(res, 400, { error: '请提供 groupId 或 memberId。' });
       return;
     }
 
@@ -1372,6 +1681,7 @@ async function handleWebApiRequest(params: {
         scopeId,
         typeof body.cwd === 'string' ? body.cwd : undefined
       );
+      const beforeLen = groupEngine.getRoom(scopeId, groupId)?.messages.length ?? 0;
       const room = await groupEngine.postMessage({
         scopeId,
         groupId,
@@ -1381,6 +1691,15 @@ async function handleWebApiRequest(params: {
         content,
         cwd,
       });
+      if (scopeId !== 'default') {
+        const added = room.messages.slice(beforeLen + 1);
+        if (added.length > 0) {
+          contextBridge.recordReceiptForMainAgent(
+            scopeId,
+            `家庭群聊「${room.title}」围绕「${content.slice(0, 80)}」新增回复：${added.map((m) => `${m.senderName}: ${m.content.slice(0, 180)}`).join(' | ')}`
+          );
+        }
+      }
       writeJson(res, 200, { room });
       return;
     }

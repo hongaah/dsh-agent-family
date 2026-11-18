@@ -21,11 +21,23 @@ interface MutableGroupRoom {
   memberIds: 'all_enabled' | readonly string[];
   messages: GroupMessage[];
   readCursors: Record<string, number>;
+  lastHumanReadCount: number;
   activeSpeakerId: string | null;
   streamingDraft: GroupStreamingDraft | null;
   lastPassMemberName?: string;
   running: boolean;
   relayAbort: AbortController | null;
+}
+
+function computeRoomUnreadCount(room: MutableGroupRoom): number {
+  const start = Math.max(0, Math.min(room.lastHumanReadCount, room.messages.length));
+  let count = 0;
+  for (let i = start; i < room.messages.length; i += 1) {
+    if (room.messages[i]?.senderId !== 'human') {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 export function extractMemberMentions(
@@ -97,6 +109,7 @@ export class GroupChatEngine {
       memberIds: input.memberIds === 'all_enabled' ? 'all_enabled' : [...input.memberIds],
       messages: [],
       readCursors: {},
+      lastHumanReadCount: 0,
       activeSpeakerId: null,
       streamingDraft: null,
       running: false,
@@ -118,12 +131,26 @@ export class GroupChatEngine {
     room.relayAbort = null;
     room.messages = [];
     room.readCursors = {};
+    room.lastHumanReadCount = 0;
     room.activeSpeakerId = null;
     room.streamingDraft = null;
     room.lastPassMemberName = undefined;
     room.running = false;
     this.persistRoomsToDisk();
     this.broadcast(room);
+    return this.toImmutable(room);
+  }
+
+  public markRoomRead(scopeId: string, groupId: string): FamilyGroupRoom {
+    const room =
+      groupId === MAIN_GROUP_ID
+        ? this.ensureMainRoom(scopeId)
+        : (this.rooms.get(this.roomKey(scopeId, groupId)) ?? this.ensureMainRoom(scopeId));
+    if (room.lastHumanReadCount !== room.messages.length) {
+      room.lastHumanReadCount = room.messages.length;
+      this.persistRoomsToDisk();
+      this.broadcast(room);
+    }
     return this.toImmutable(room);
   }
 
@@ -183,6 +210,9 @@ export class GroupChatEngine {
       createdAt: new Date().toISOString(),
     };
     room.messages.push(triggerMsg);
+    if (input.senderId === 'human') {
+      room.lastHumanReadCount = room.messages.length;
+    }
     if (memberIdSet.has(input.senderId)) {
       room.readCursors[input.senderId] = room.messages.length;
     }
@@ -367,6 +397,7 @@ export class GroupChatEngine {
       memberIds: 'all_enabled',
       messages: [],
       readCursors: {},
+      lastHumanReadCount: 0,
       activeSpeakerId: null,
       streamingDraft: null,
       running: false,
@@ -434,6 +465,7 @@ export class GroupChatEngine {
       memberIds: room.memberIds === 'all_enabled' ? 'all_enabled' : [...room.memberIds],
       messages: [...room.messages],
       readCursors: { ...room.readCursors },
+      unreadCount: computeRoomUnreadCount(room),
       activeSpeakerId: room.activeSpeakerId,
       streamingDraft: room.streamingDraft ? { ...room.streamingDraft } : null,
       lastPassMemberName: room.lastPassMemberName,
@@ -458,6 +490,10 @@ export class GroupChatEngine {
         memberIds: r.memberIds,
         messages: r.messages.slice(-120),
         readCursors: r.readCursors,
+        lastHumanReadCount: Math.max(
+          0,
+          r.lastHumanReadCount - Math.max(0, r.messages.length - 120)
+        ),
       }));
       writeFileSync(tmpPath, `${JSON.stringify({ version: 1, rooms: roomsData }, null, 2)}\n`, 'utf8');
       renameSync(tmpPath, filePath);
@@ -499,6 +535,10 @@ export class GroupChatEngine {
         for (const [k, v] of Object.entries(rawCursors)) {
           if (typeof v === 'number') readCursors[k] = v;
         }
+        const lastHumanReadCount =
+          typeof r.lastHumanReadCount === 'number'
+            ? Math.max(0, Math.min(messages.length, r.lastHumanReadCount))
+            : messages.length;
         this.rooms.set(this.roomKey(r.scopeId, r.id), {
           id: r.id,
           title: r.title,
@@ -506,6 +546,7 @@ export class GroupChatEngine {
           memberIds,
           messages,
           readCursors,
+          lastHumanReadCount,
           activeSpeakerId: null,
           streamingDraft: null,
           running: false,

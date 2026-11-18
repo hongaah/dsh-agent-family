@@ -160,6 +160,7 @@ export interface MemberRuntimeSnapshot {
   readonly cwd?: string;
   readonly queueLength: number;
   readonly entries: readonly MemberChatEntry[];
+  readonly unreadCount?: number;
   readonly lastActiveAt?: string;
 }
 
@@ -211,11 +212,17 @@ export interface FamilyGroupRoom {
   readonly messages: readonly GroupMessage[];
   /** 每个成员已投递到的消息下标，用于切片计算「未读群消息增量」 */
   readonly readCursors: Readonly<Record<string, number>>;
+  /** 人类用户尚未阅读的新群聊回复条数 */
+  readonly unreadCount: number;
   readonly activeSpeakerId: string | null;
   readonly streamingDraft?: GroupStreamingDraft | null;
   readonly lastPassMemberName?: string;
   readonly running: boolean;
 }
+
+export type FamilyFocusTarget =
+  | { readonly kind: 'group'; readonly groupId: string }
+  | { readonly kind: 'member'; readonly memberId: string };
 
 export type FamilyRealtimeEvent =
   | { readonly type: 'roster_updated'; readonly members: readonly FamilyMember[] }
@@ -223,4 +230,5 @@ export type FamilyRealtimeEvent =
   | { readonly type: 'approval_opened'; readonly approval: PendingApproval }
   | { readonly type: 'approval_closed'; readonly approvalId: string; readonly selectedOptionId?: string }
   | { readonly type: 'phone_call_updated'; readonly record: PhoneCallRecord }
-  | { readonly type: 'group_updated'; readonly room: FamilyGroupRoom };
+  | { readonly type: 'group_updated'; readonly room: FamilyGroupRoom }
+  | { readonly type: 'focus_requested'; readonly scopeId: string; readonly target: FamilyFocusTarget };

@@ -6,11 +6,11 @@ import {
   CornerUpRight,
   Eraser,
   Hash,
+  Maximize2,
   PanelRight,
   Pencil,
   PhoneCall,
   Plus,
-  RefreshCw,
   RotateCcw,
   Search,
   Sparkles,
@@ -21,8 +21,7 @@ import {
 } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-import { defaultLobeAvatarForBody } from '../core/avatar-spec.ts';
-import type { FamilyMember } from '../core/types.ts';
+import type { FamilyFocusTarget, FamilyGroupRoom, FamilyMember } from '../core/types.ts';
 import { ApprovalBanner } from './ApprovalBanner.tsx';
 import { familyClientApi, useFamilyLiveState } from './api.ts';
 import { CommandPalette } from './CommandPalette.tsx';
@@ -42,14 +41,23 @@ export interface SessionSummaryOption {
   readonly cwd?: string;
 }
 
+export interface FamilyNavigationOrder {
+  readonly scopeId?: string;
+  readonly target: FamilyFocusTarget;
+  readonly seq: number;
+}
+
 export interface FamilyWorkbenchProps {
   readonly sessions: readonly SessionSummaryOption[];
   readonly onBackToConversation: () => void;
+  readonly mode?: 'fullscreen' | 'split';
+  readonly lockedScopeId?: string;
+  readonly isVisible?: boolean;
+  readonly navigationOrder?: FamilyNavigationOrder | null;
+  readonly onExpandFullscreen?: (scopeId: string, currentTarget: FamilyFocusTarget) => void;
 }
 
-type LoungeTarget =
-  | { readonly kind: 'group'; readonly groupId: string }
-  | { readonly kind: 'member'; readonly memberId: string };
+type LoungeTarget = FamilyFocusTarget;
 
 type InspectorTab = 'calls' | 'context';
 
@@ -153,15 +161,26 @@ function HandoffPopoverButton({
 export function FamilyWorkbench({
   sessions,
   onBackToConversation,
+  mode = 'fullscreen',
+  lockedScopeId,
+  isVisible = true,
+  navigationOrder,
+  onExpandFullscreen,
 }: FamilyWorkbenchProps): React.ReactElement {
-  const [selectedScopeId, setSelectedScopeId] = useState<string>(() => sessions[0]?.id ?? 'default');
+  const isSplitMode = mode === 'split';
+  const [internalScopeId, setInternalScopeId] = useState<string>(
+    () => lockedScopeId ?? navigationOrder?.scopeId ?? sessions[0]?.id ?? 'default'
+  );
+  const selectedScopeId = lockedScopeId ?? internalScopeId;
   const { state, refresh } = useFamilyLiveState(selectedScopeId);
 
-  const [target, setTarget] = useState<LoungeTarget>({ kind: 'group', groupId: 'family-main' });
+  const [target, setTarget] = useState<LoungeTarget>(
+    () => navigationOrder?.target ?? { kind: 'group', groupId: 'family-main' }
+  );
   const [sendFresh, setSendFresh] = useState<boolean>(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState<boolean>(() =>
-    typeof window !== 'undefined' ? window.innerWidth >= 1120 : true
+    !isSplitMode && (typeof window !== 'undefined' ? window.innerWidth >= 1120 : true)
   );
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('calls');
 
@@ -174,19 +193,28 @@ export function FamilyWorkbench({
   const [creatingGroup, setCreatingGroup] = useState<boolean>(false);
   const [newGroupTitle, setNewGroupTitle] = useState<string>('');
   const [newGroupMembers, setNewGroupMembers] = useState<string[]>([]);
-  const [probing, setProbing] = useState<boolean>(false);
   const [composerInsert, setComposerInsert] = useState<{ seq: number; text: string } | null>(null);
 
   // 智能贴底滚动状态
   const streamRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef<boolean>(true);
   const [showJumpBottom, setShowJumpBottom] = useState<boolean>(false);
+  const handledNavSeqRef = useRef<number>(0);
 
   useEffect(() => {
-    if (selectedScopeId === 'default' && sessions.length > 0 && sessions[0]?.id) {
-      setSelectedScopeId(sessions[0].id);
+    if (!lockedScopeId && internalScopeId === 'default' && sessions.length > 0 && sessions[0]?.id) {
+      setInternalScopeId(sessions[0].id);
     }
-  }, [sessions, selectedScopeId]);
+  }, [sessions, internalScopeId, lockedScopeId]);
+
+  useEffect(() => {
+    if (!navigationOrder || navigationOrder.seq === handledNavSeqRef.current) return;
+    handledNavSeqRef.current = navigationOrder.seq;
+    if (!lockedScopeId && navigationOrder.scopeId) {
+      setInternalScopeId(navigationOrder.scopeId);
+    }
+    setTarget(navigationOrder.target);
+  }, [navigationOrder, lockedScopeId]);
 
   // 全局 Cmd/Ctrl + K 快捷键唤起指挥面板
   useEffect(() => {
@@ -225,7 +253,7 @@ export function FamilyWorkbench({
     return map;
   }, [state.snapshots, selectedScopeId]);
 
-  const scopedRooms = useMemo(() => {
+  const scopedRooms = useMemo<readonly FamilyGroupRoom[]>(() => {
     const found = state.rooms.filter((r) => r.scopeId === selectedScopeId);
     if (found.length > 0) return found;
     return [
@@ -236,6 +264,7 @@ export function FamilyWorkbench({
         memberIds: 'all_enabled' as const,
         messages: [],
         readCursors: {},
+        unreadCount: 0,
         activeSpeakerId: null,
         streamingDraft: null,
         running: false,
@@ -262,6 +291,31 @@ export function FamilyWorkbench({
     if (!activeMember) return undefined;
     return snapshotByMember.get(activeMember.id);
   }, [activeMember, snapshotByMember]);
+
+  // 当面板处于可见状态且当前打开的群聊/成员有未读消息时，自动标记为已读
+  const activeGroupUnread = activeGroupRoom?.unreadCount ?? 0;
+  const activeMemberUnread = activeMemberSnapshot?.unreadCount ?? 0;
+
+  useEffect(() => {
+    if (!isVisible) return;
+    if (target.kind === 'group' && activeGroupRoom && activeGroupUnread > 0) {
+      void familyClientApi
+        .markRead({ scopeId: selectedScopeId, groupId: activeGroupRoom.id })
+        .catch(() => undefined);
+    } else if (target.kind === 'member' && activeMember && activeMemberUnread > 0) {
+      void familyClientApi
+        .markRead({ scopeId: selectedScopeId, memberId: activeMember.id })
+        .catch(() => undefined);
+    }
+  }, [
+    isVisible,
+    target,
+    selectedScopeId,
+    activeGroupRoom,
+    activeGroupUnread,
+    activeMember,
+    activeMemberUnread,
+  ]);
 
   // 监听消息变化自动平滑贴底（仅当用户未手动上翻历史时）
   const streamSignature =
@@ -358,16 +412,6 @@ export function FamilyWorkbench({
     }
   };
 
-  const handleReprobeBodies = async () => {
-    setProbing(true);
-    try {
-      await familyClientApi.probeBodies();
-      await refresh();
-    } finally {
-      setProbing(false);
-    }
-  };
-
   const handleSeedFamily = async () => {
     setErrorBanner(null);
     try {
@@ -413,78 +457,160 @@ export function FamilyWorkbench({
 
   return (
     <div className="dshfam-root">
-      {/* 顶栏 Toolbar (shadcn minimal header) */}
-      <header className="dshfam-header">
+      {/* 顶栏 Toolbar (兼容右侧同屏分栏紧凑形态与三栏全屏工作台形态) */}
+      <header className="dshfam-header" style={isSplitMode ? { height: 44, padding: '0 10px' } : undefined}>
         <div className="dshfam-header-left">
-          <MemberAvatar avatar="lobe:deepseek" size={28} />
+          <MemberAvatar avatar="lobe:deepseek" size={isSplitMode ? 22 : 28} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-            <span style={{ fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap' }}>智能体家庭</span>
-            <span style={{ color: 'var(--sh-muted-fg)' }}>/</span>
-            {sessions.length > 0 ? (
-              <select
-                aria-label="关联工作区会话"
-                className="sh-select"
-                style={{ height: 28, width: 196, fontSize: 12 }}
-                value={selectedScopeId}
-                onChange={(e) => setSelectedScopeId(e.target.value)}
-              >
-                {sessions.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.title}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <span style={{ fontSize: 12, color: 'var(--sh-muted-fg)' }}>默认工作区</span>
+            <span style={{ fontWeight: 600, fontSize: isSplitMode ? 13 : 14, whiteSpace: 'nowrap' }}>
+              智能体家庭
+            </span>
+            {!isSplitMode && (
+              <>
+                <span style={{ color: 'var(--sh-muted-fg)' }}>/</span>
+                {sessions.length > 0 ? (
+                  <select
+                    aria-label="关联工作区会话"
+                    className="sh-select"
+                    style={{ height: 28, width: 210, fontSize: 12 }}
+                    value={selectedScopeId}
+                    onChange={(e) => setInternalScopeId(e.target.value)}
+                  >
+                    {sessions.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.title}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span style={{ fontSize: 12, color: 'var(--sh-muted-fg)' }}>默认工作区</span>
+                )}
+              </>
             )}
           </div>
         </div>
 
         <div className="dshfam-header-right">
-          <button
-            type="button"
-            className="sh-btn sh-btn-outline"
-            style={{ height: 30, padding: '0 10px', color: 'var(--sh-muted-fg)', gap: 10 }}
-            onClick={() => setPaletteOpen(true)}
-          >
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
-              <Search size={13} />
-              <span>跳转或执行命令…</span>
-            </span>
-            <span className="sh-kbd">⌘K</span>
-          </button>
+          {!isSplitMode && (
+            <button
+              type="button"
+              className="sh-btn sh-btn-outline"
+              style={{ height: 30, padding: '0 10px', color: 'var(--sh-muted-fg)', gap: 10 }}
+              onClick={() => setPaletteOpen(true)}
+            >
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+                <Search size={13} />
+                <span>跳转或执行命令…</span>
+              </span>
+              <span className="sh-kbd">⌘K</span>
+            </button>
+          )}
 
           <button
             type="button"
-            className="sh-btn sh-btn-primary"
-            style={{ height: 30 }}
+            className={isSplitMode ? 'sh-btn sh-btn-outline sh-btn-sm' : 'sh-btn sh-btn-primary'}
+            style={{ height: isSplitMode ? 27 : 30 }}
             onClick={openCreateSheet}
+            title="创造新家庭成员"
           >
-            <UserPlus size={14} />
+            <UserPlus size={13} />
             <span>新成员</span>
           </button>
 
           <button
             type="button"
             className={`sh-btn sh-btn-icon ${inspectorOpen ? 'sh-btn-secondary' : 'sh-btn-ghost'}`}
-            title="展开/收起右侧协作检查器"
+            style={isSplitMode ? { width: 27, height: 27 } : undefined}
+            title="展开/收起通话记录与灵魂档案"
             aria-label="切换右侧栏"
             onClick={() => setInspectorOpen((v) => !v)}
           >
-            <PanelRight size={15} />
+            <PanelRight size={14} />
           </button>
 
-          <button
-            type="button"
-            className="sh-btn sh-btn-ghost"
-            style={{ height: 30 }}
-            onClick={onBackToConversation}
-          >
-            <ArrowLeft size={14} />
-            <span>返回对话</span>
-          </button>
+          {isSplitMode ? (
+            onExpandFullscreen && (
+              <button
+                type="button"
+                className="sh-btn sh-btn-ghost sh-btn-sm"
+                style={{ height: 27, padding: '0 8px' }}
+                title="展开到全屏家庭工作台（保持当前会话与聊天目标一致）"
+                onClick={() => onExpandFullscreen(selectedScopeId, target)}
+              >
+                <Maximize2 size={13} />
+                <span>全屏</span>
+              </button>
+            )
+          ) : (
+            <button
+              type="button"
+              className="sh-btn sh-btn-ghost"
+              style={{ height: 30 }}
+              onClick={onBackToConversation}
+            >
+              <ArrowLeft size={14} />
+              <span>返回对话</span>
+            </button>
+          )}
         </div>
       </header>
+
+      {/* 右侧同屏分栏模式专属：顶部紧凑群聊 & 家庭成员快捷切换栏（让出 100% 聊天宽度） */}
+      {isSplitMode && (
+        <div className="dshfam-split-bar">
+          {scopedRooms.map((room) => {
+            const active = target.kind === 'group' && target.groupId === room.id;
+            return (
+              <button
+                key={room.id}
+                type="button"
+                className="dshfam-split-pill"
+                data-active={String(active)}
+                onClick={() => setTarget({ kind: 'group', groupId: room.id })}
+              >
+                {room.running ? (
+                  <span className="dshfam-live-green-dot" />
+                ) : room.id === 'family-main' ? (
+                  <Users size={12} />
+                ) : (
+                  <Hash size={12} />
+                )}
+                <span>{room.title.replace(/^🏠\s*/u, '')}</span>
+                {room.unreadCount > 0 && !active && (
+                  <span className="sh-unread-badge">{room.unreadCount}</span>
+                )}
+              </button>
+            );
+          })}
+
+          <span style={{ width: 1, height: 15, background: 'var(--sh-border)', flexShrink: 0 }} />
+
+          {state.members.map((m) => {
+            const active = target.kind === 'member' && target.memberId === m.id;
+            const snap = snapshotByMember.get(m.id);
+            const memberBusy =
+              snap?.state === 'working' ||
+              snap?.state === 'in_call' ||
+              snap?.state === 'awaiting_approval';
+            const unread = snap?.unreadCount ?? 0;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                className="dshfam-split-pill"
+                data-active={String(active)}
+                style={!m.enabled ? { opacity: 0.5 } : undefined}
+                onClick={() => setTarget({ kind: 'member', memberId: m.id })}
+              >
+                <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} alt={m.name} size={15} />
+                <span>{m.name}</span>
+                {memberBusy && <span className="dshfam-live-green-dot" />}
+                {unread > 0 && !active && <span className="sh-unread-badge">{unread}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* 原生权限举手待批示横幅 */}
       <ApprovalBanner approvals={state.pendingApprovals} />
@@ -515,306 +641,275 @@ export function FamilyWorkbench({
         </div>
       )}
 
-      {/* 三栏主工作区 */}
+      {/* 主工作区 */}
       <div className="dshfam-workspace">
-        {/* 左栏：群聊频道 + 家庭成员 + CLI 身体底座 */}
-        <aside className="dshfam-sidebar">
-          <div className="dshfam-sidebar-scroll">
-            {/* 群聊分组 */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <div className="sh-section-label">
-                <span>群聊空间</span>
-                <button
-                  type="button"
-                  className="sh-btn sh-btn-ghost sh-btn-icon"
-                  style={{ width: 22, height: 22 }}
-                  title="新建专题讨论群"
-                  onClick={() => setCreatingGroup((v) => !v)}
-                >
-                  <Plus size={13} />
-                </button>
-              </div>
-
-              {creatingGroup && (
-                <div
-                  style={{
-                    margin: '4px 4px 6px',
-                    padding: 10,
-                    borderRadius: 8,
-                    border: '1px solid var(--sh-border)',
-                    background: 'var(--sh-card)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 8,
-                  }}
-                >
-                  <input
-                    className="sh-input"
-                    style={{ height: 30, fontSize: 12 }}
-                    placeholder="群聊名称（如：接口联调群）"
-                    value={newGroupTitle}
-                    onChange={(e) => setNewGroupTitle(e.target.value)}
-                  />
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                    {enabledMembers.map((m) => {
-                      const selected = newGroupMembers.includes(m.id);
-                      return (
-                        <button
-                          key={m.id}
-                          type="button"
-                          className="dshfam-chip"
-                          style={
-                            selected
-                              ? { borderColor: 'var(--sh-fg)', background: 'var(--sh-accent)' }
-                              : undefined
-                          }
-                          onClick={() =>
-                            setNewGroupMembers((prev) =>
-                              prev.includes(m.id) ? prev.filter((x) => x !== m.id) : [...prev, m.id]
-                            )
-                          }
-                        >
-                          <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} size={14} />
-                          <span>{m.name}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
-                    <button
-                      type="button"
-                      className="sh-btn sh-btn-ghost sh-btn-sm"
-                      onClick={() => setCreatingGroup(false)}
-                    >
-                      取消
-                    </button>
-                    <button
-                      type="button"
-                      className="sh-btn sh-btn-primary sh-btn-sm"
-                      disabled={!newGroupTitle.trim()}
-                      onClick={() => void handleCreateTopicGroup()}
-                    >
-                      创建
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {scopedRooms.map((room) => {
-                const isSelected = target.kind === 'group' && target.groupId === room.id;
-                return (
-                  <div
-                    key={room.id}
-                    className="sh-nav-row"
-                    data-active={String(isSelected)}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setTarget({ kind: 'group', groupId: room.id })}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') setTarget({ kind: 'group', groupId: room.id });
-                    }}
-                  >
-                    <span className="dshfam-avatar" style={{ width: 26, height: 26 }}>
-                      {room.id === 'family-main' ? <Users size={13} /> : <Hash size={13} />}
-                    </span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontSize: 12.5,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {room.title.replace(/^🏠\s*/u, '')}
-                      </div>
-                    </div>
-                    {room.running ? (
-                      <span className="dshfam-dot" data-state="working" title="讨论中" />
-                    ) : room.id !== 'family-main' ? (
-                      <button
-                        type="button"
-                        className="sh-btn sh-btn-ghost sh-btn-icon sh-row-action"
-                        style={{ width: 20, height: 20 }}
-                        title="移除专题群"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void familyClientApi.deleteGroup(selectedScopeId, room.id).then(() => {
-                            if (isSelected) setTarget({ kind: 'group', groupId: 'family-main' });
-                            return refresh();
-                          });
-                        }}
-                      >
-                        <Trash2 size={11} />
-                      </button>
-                    ) : (
-                      <span style={{ fontSize: 11, color: 'var(--sh-muted-fg)' }}>
-                        {room.messages.length || ''}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* 家庭成员分组 */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <div className="sh-section-label">
-                <span>家庭成员 ({state.members.length})</span>
-                <button
-                  type="button"
-                  className="sh-btn sh-btn-ghost sh-btn-icon"
-                  style={{ width: 22, height: 22 }}
-                  title="创造新家庭成员"
-                  onClick={openCreateSheet}
-                >
-                  <Plus size={13} />
-                </button>
-              </div>
-
-              {state.members.length === 0 ? (
-                <div
-                  style={{
-                    margin: '4px 4px 0',
-                    padding: 12,
-                    borderRadius: 9,
-                    border: '1px dashed var(--sh-border)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 8,
-                    fontSize: 12,
-                    color: 'var(--sh-muted-fg)',
-                  }}
-                >
-                  <div>尚未登记成员，可一键导入预设家庭或自由创建：</div>
+        {/* 左栏：群聊频道 + 家庭成员（全屏模式展示；已移除底部冗余的本机 CLI 身体状态底座） */}
+        {!isSplitMode && (
+          <aside className="dshfam-sidebar">
+            <div className="dshfam-sidebar-scroll">
+              {/* 群聊分组 */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div className="sh-section-label">
+                  <span>群聊空间</span>
                   <button
                     type="button"
-                    className="sh-btn sh-btn-outline sh-btn-sm"
-                    onClick={() => void handleSeedFamily()}
+                    className="sh-btn sh-btn-ghost sh-btn-icon"
+                    style={{ width: 22, height: 22 }}
+                    title="新建专题讨论群"
+                    onClick={() => setCreatingGroup((v) => !v)}
                   >
-                    <Sparkles size={12} />
-                    <span>导入预设四口之家</span>
+                    <Plus size={13} />
                   </button>
                 </div>
-              ) : (
-                state.members.map((member) => {
-                  const snap = snapshotByMember.get(member.id);
-                  const st = !member.enabled ? 'sleeping' : (snap?.state ?? 'sleeping');
-                  const isSelected = target.kind === 'member' && target.memberId === member.id;
+
+                {creatingGroup && (
+                  <div
+                    style={{
+                      margin: '4px 4px 6px',
+                      padding: 10,
+                      borderRadius: 8,
+                      border: '1px solid var(--sh-border)',
+                      background: 'var(--sh-card)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 8,
+                    }}
+                  >
+                    <input
+                      className="sh-input"
+                      style={{ height: 30, fontSize: 12 }}
+                      placeholder="群聊名称（如：接口联调群）"
+                      value={newGroupTitle}
+                      onChange={(e) => setNewGroupTitle(e.target.value)}
+                    />
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {enabledMembers.map((m) => {
+                        const selected = newGroupMembers.includes(m.id);
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            className="dshfam-chip"
+                            style={
+                              selected
+                                ? { borderColor: 'var(--sh-fg)', background: 'var(--sh-accent)' }
+                                : undefined
+                            }
+                            onClick={() =>
+                              setNewGroupMembers((prev) =>
+                                prev.includes(m.id) ? prev.filter((x) => x !== m.id) : [...prev, m.id]
+                              )
+                            }
+                          >
+                            <MemberAvatar avatar={m.avatar} bodyKind={m.body.kind} size={14} />
+                            <span>{m.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                      <button
+                        type="button"
+                        className="sh-btn sh-btn-ghost sh-btn-sm"
+                        onClick={() => setCreatingGroup(false)}
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        className="sh-btn sh-btn-primary sh-btn-sm"
+                        disabled={!newGroupTitle.trim()}
+                        onClick={() => void handleCreateTopicGroup()}
+                      >
+                        创建
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {scopedRooms.map((room) => {
+                  const isSelected = target.kind === 'group' && target.groupId === room.id;
+                  const hasUnread = room.unreadCount > 0 && !isSelected;
                   return (
                     <div
-                      key={member.id}
+                      key={room.id}
                       className="sh-nav-row"
                       data-active={String(isSelected)}
-                      style={!member.enabled ? { opacity: 0.52 } : undefined}
                       role="button"
                       tabIndex={0}
-                      onClick={() => setTarget({ kind: 'member', memberId: member.id })}
+                      onClick={() => setTarget({ kind: 'group', groupId: room.id })}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') setTarget({ kind: 'member', memberId: member.id });
+                        if (e.key === 'Enter') setTarget({ kind: 'group', groupId: room.id });
                       }}
                     >
-                      <MemberAvatar
-                        avatar={member.avatar}
-                        bodyKind={member.body.kind}
-                        alt={member.name}
-                        size={28}
-                      />
+                      <span className="dshfam-avatar" style={{ width: 26, height: 26 }}>
+                        {room.id === 'family-main' ? <Users size={13} /> : <Hash size={13} />}
+                      </span>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                          <span
-                            style={{
-                              fontSize: 12.5,
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap',
-                            }}
-                          >
-                            {member.name}
-                          </span>
-                          <span className="sh-badge" style={{ height: 17, fontSize: 10 }}>
-                            {member.body.kind}
-                          </span>
-                        </div>
                         <div
                           style={{
-                            fontSize: 11,
-                            color: 'var(--sh-muted-fg)',
+                            fontSize: 12.5,
+                            fontWeight: hasUnread ? 700 : undefined,
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {!member.enabled
-                            ? '休假停用中'
-                            : snap?.statusText || STATE_LABELS[st] || `@${member.id}`}
+                          {room.title.replace(/^🏠\s*/u, '')}
                         </div>
                       </div>
-
-                      <button
-                        type="button"
-                        className="sh-btn sh-btn-ghost sh-btn-icon sh-row-action"
-                        style={{ width: 22, height: 22 }}
-                        title="编辑成员灵魂与头像"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openEditSheet(member);
-                        }}
-                      >
-                        <Pencil size={11} />
-                      </button>
-                      <span className="dshfam-dot" data-state={st} />
+                      {room.running && (
+                        <span className="dshfam-dot" data-state="working" title="群聊进行中" />
+                      )}
+                      {hasUnread ? (
+                        <span className="sh-unread-badge" title={`${room.unreadCount} 条未读新消息`}>
+                          {room.unreadCount}
+                        </span>
+                      ) : (
+                        room.id !== 'family-main' &&
+                        !room.running && (
+                          <button
+                            type="button"
+                            className="sh-btn sh-btn-ghost sh-btn-icon sh-row-action"
+                            style={{ width: 20, height: 20 }}
+                            title="移除专题群"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void familyClientApi.deleteGroup(selectedScopeId, room.id).then(() => {
+                                if (isSelected) setTarget({ kind: 'group', groupId: 'family-main' });
+                                return refresh();
+                              });
+                            }}
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        )
+                      )}
                     </div>
                   );
-                })
-              )}
-            </div>
-          </div>
+                })}
+              </div>
 
-          {/* 左下角：本机四大 CLI 身体状态底座 */}
-          <div className="dshfam-sidebar-footer">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--sh-muted-fg)' }}>
-                本机 CLI 身体状态
-              </span>
-              <button
-                type="button"
-                className="sh-btn sh-btn-ghost sh-btn-icon"
-                style={{ width: 20, height: 20 }}
-                disabled={probing}
-                title="重新检测本机 CLI"
-                onClick={() => void handleReprobeBodies()}
-              >
-                <RefreshCw size={11} />
-              </button>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 5 }}>
-              {state.bodies.map((b) => (
-                <div
-                  key={b.kind}
-                  title={`${b.label}: ${b.note || (b.available ? '可用' : '未安装')}`}
-                  style={{
-                    padding: '4px 5px',
-                    borderRadius: 6,
-                    border: '1px solid var(--sh-border)',
-                    background: 'var(--sh-card)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 4,
-                  }}
-                >
-                  <MemberAvatar avatar={defaultLobeAvatarForBody(b.kind)} bodyKind={b.kind} size={16} />
-                  <span
-                    className="dshfam-dot"
-                    style={{ width: 6, height: 6 }}
-                    data-state={b.available ? 'working' : 'sleeping'}
-                  />
+              {/* 家庭成员分组 */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div className="sh-section-label">
+                  <span>家庭成员 ({state.members.length})</span>
+                  <button
+                    type="button"
+                    className="sh-btn sh-btn-ghost sh-btn-icon"
+                    style={{ width: 22, height: 22 }}
+                    title="创造新家庭成员"
+                    onClick={openCreateSheet}
+                  >
+                    <Plus size={13} />
+                  </button>
                 </div>
-              ))}
+
+                {state.members.length === 0 ? (
+                  <div
+                    style={{
+                      margin: '4px 4px 0',
+                      padding: 12,
+                      borderRadius: 9,
+                      border: '1px dashed var(--sh-border)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 8,
+                      fontSize: 12,
+                      color: 'var(--sh-muted-fg)',
+                    }}
+                  >
+                    <div>尚未登记成员，可一键导入预设家庭或自由创建：</div>
+                    <button
+                      type="button"
+                      className="sh-btn sh-btn-outline sh-btn-sm"
+                      onClick={() => void handleSeedFamily()}
+                    >
+                      <Sparkles size={12} />
+                      <span>导入预设四口之家</span>
+                    </button>
+                  </div>
+                ) : (
+                  state.members.map((member) => {
+                    const snap = snapshotByMember.get(member.id);
+                    const st = !member.enabled ? 'sleeping' : (snap?.state ?? 'sleeping');
+                    const isSelected = target.kind === 'member' && target.memberId === member.id;
+                    const memberUnread = (snap?.unreadCount ?? 0) > 0 && !isSelected ? snap!.unreadCount! : 0;
+                    return (
+                      <div
+                        key={member.id}
+                        className="sh-nav-row"
+                        data-active={String(isSelected)}
+                        style={!member.enabled ? { opacity: 0.52 } : undefined}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setTarget({ kind: 'member', memberId: member.id })}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') setTarget({ kind: 'member', memberId: member.id });
+                        }}
+                      >
+                        <MemberAvatar
+                          avatar={member.avatar}
+                          bodyKind={member.body.kind}
+                          alt={member.name}
+                          size={28}
+                        />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                            <span
+                              style={{
+                                fontSize: 12.5,
+                                fontWeight: memberUnread > 0 ? 700 : undefined,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {member.name}
+                            </span>
+                            <span className="sh-badge" style={{ height: 17, fontSize: 10 }}>
+                              {member.body.kind}
+                            </span>
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: 'var(--sh-muted-fg)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {!member.enabled
+                              ? '休假停用中'
+                              : snap?.statusText || STATE_LABELS[st] || `@${member.id}`}
+                          </div>
+                        </div>
+
+                        {memberUnread > 0 && (
+                          <span className="sh-unread-badge">{memberUnread}</span>
+                        )}
+                        <button
+                          type="button"
+                          className="sh-btn sh-btn-ghost sh-btn-icon sh-row-action"
+                          style={{ width: 22, height: 22 }}
+                          title="编辑成员灵魂与头像"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEditSheet(member);
+                          }}
+                        >
+                          <Pencil size={11} />
+                        </button>
+                        <span className="dshfam-dot" data-state={st} />
+                      </div>
+                    );
+                  })
+                )}
+              </div>
             </div>
-          </div>
-        </aside>
+          </aside>
+        )}
 
         {/* 中栏：对话主舞台 */}
         <main className="dshfam-main">
@@ -911,17 +1006,17 @@ export function FamilyWorkbench({
                     </div>
                     <div>
                       <div style={{ fontSize: 15, fontWeight: 600 }}>
-                        在「{activeGroupRoom.title.replace(/^🏠\s*/u, '')}」召集大家一起干活
+                        欢迎来到「{activeGroupRoom.title.replace(/^🏠\s*/u, '')}」
                       </div>
                       <div style={{ fontSize: 12.5, color: 'var(--sh-muted-fg)', marginTop: 4 }}>
-                        每位成员拥有独立 CLI 身体与灵魂，会按未读增量阅读前面伙伴的发言、互相 @ 接龙商量或直言拒绝不合理方案。
+                        平时唠嗑闲聊有温度，遇到当前会话的技术问题也能随时拉家里人一起出主意。
                       </div>
                     </div>
                     {groupParticipantMembers.length > 0 && (
                       <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 8 }}>
                         {[
-                          '大家简短报个到，说说各自擅长什么、什么事可以找你配合',
-                          '结合当前工作区代码，大家讨论一下最值得优化的一个模块并分工',
+                          '大家今天都在忙啥呢？出来冒个泡唠两句～',
+                          '结合当前会话遇到的问题，大家一起出出主意吧',
                         ].map((promptIdea) => (
                           <button
                             key={promptIdea}
@@ -1560,7 +1655,7 @@ export function FamilyWorkbench({
         onSelectMember={(mId) => setTarget({ kind: 'member', memberId: mId })}
         onCreateMember={openCreateSheet}
         onCreateGroup={() => setCreatingGroup(true)}
-        onReprobeBodies={() => void handleReprobeBodies()}
+        onReprobeBodies={() => void familyClientApi.probeBodies().then(() => refresh())}
         onSeedFamily={() => void handleSeedFamily()}
         onBackToMainChat={onBackToConversation}
       />
