@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { applyRealtimeEventToState, createEmptyBootstrapState } from '../src/client/api.ts';
+import {
+  applyRealtimeEventToState,
+  createEmptyBootstrapState,
+  requestJsonWithRetry,
+} from '../src/client/api.ts';
 import type { FamilyMember, PendingApproval } from '../src/core/types.ts';
 
 describe('Client Bootstrap State & Realtime Event Reducer', () => {
@@ -50,5 +54,27 @@ describe('Client Bootstrap State & Realtime Event Reducer', () => {
       selectedOptionId: 'allow',
     });
     expect(state.pendingApprovals).toHaveLength(0);
+  });
+
+  it('automatically retries transient TypeError: Failed to fetch (Electron keep-alive socket close race) and succeeds', async () => {
+    let attempts = 0;
+    const mockFetch = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new TypeError('Failed to fetch');
+      }
+      return new Response(JSON.stringify({ accepted: true }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const res = await requestJsonWithRetry<{ accepted: boolean }>(
+      '/groups/messages',
+      { method: 'POST', body: JSON.stringify({ content: 'hello' }) },
+      mockFetch as unknown as typeof fetch
+    );
+    expect(res.accepted).toBe(true);
+    expect(attempts).toBe(2);
   });
 });

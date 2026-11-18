@@ -111,20 +111,61 @@ export function applyRealtimeEventToState(
   }
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
-  const data = (await res.json()) as Record<string, unknown>;
-  if (!res.ok) {
-    const errMsg = typeof data.error === 'string' ? data.error : `请求失败 (${res.status})`;
-    throw new Error(errMsg);
+function makeClientRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
   }
-  return data as unknown as T;
+  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isTransientFetchError(err: unknown): boolean {
+  if (err instanceof TypeError) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /failed to fetch|networkerror|load failed|socket|econnreset/iu.test(msg);
+}
+
+export async function requestJsonWithRetry<T>(
+  path: string,
+  init?: RequestInit,
+  fetchImpl: typeof fetch = fetch
+): Promise<T> {
+  const maxAttempts = 3;
+  let lastErr: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const res = await fetchImpl(`${API_BASE}${path}`, {
+        ...init,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(init?.headers ?? {}),
+        },
+      });
+      const text = await res.text();
+      const data = (text.trim() ? JSON.parse(text) : {}) as Record<string, unknown>;
+      if (!res.ok) {
+        const errMsg = typeof data.error === 'string' ? data.error : `请求失败 (${res.status})`;
+        throw new Error(errMsg);
+      }
+      return data as unknown as T;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts && isTransientFetchError(err)) {
+        await new Promise((r) => setTimeout(r, attempt * 60));
+        continue;
+      }
+      if (isTransientFetchError(err)) {
+        throw new Error('家庭后台连接瞬时中断，请再试一次（若刚重启客户端请稍候 1~2 秒）');
+      }
+      throw err;
+    }
+  }
+
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  return requestJsonWithRetry<T>(path, init);
 }
 
 export const familyClientApi = {
@@ -189,11 +230,19 @@ export const familyClientApi = {
     message: string;
     cwd?: string;
     fresh?: boolean;
-  }): Promise<{ finalText: string; snapshot: MemberRuntimeSnapshot }> {
-    return requestJson<{ finalText: string; snapshot: MemberRuntimeSnapshot }>('/chat', {
-      method: 'POST',
-      body: JSON.stringify(params),
-    });
+  }): Promise<{ accepted?: boolean; finalText?: string; snapshot?: MemberRuntimeSnapshot }> {
+    const clientRequestId = makeClientRequestId();
+    return requestJson<{ accepted?: boolean; finalText?: string; snapshot?: MemberRuntimeSnapshot }>(
+      '/chat',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          ...params,
+          async: true,
+          clientRequestId,
+        }),
+      }
+    );
   },
   interrupt(params: {
     scopeId: string;
@@ -262,10 +311,15 @@ export const familyClientApi = {
     groupId: string;
     content: string;
     cwd?: string;
-  }): Promise<{ room: FamilyGroupRoom }> {
-    return requestJson<{ room: FamilyGroupRoom }>('/groups/messages', {
+  }): Promise<{ accepted?: boolean; room?: FamilyGroupRoom }> {
+    const clientRequestId = makeClientRequestId();
+    return requestJson<{ accepted?: boolean; room?: FamilyGroupRoom }>('/groups/messages', {
       method: 'POST',
-      body: JSON.stringify(params),
+      body: JSON.stringify({
+        ...params,
+        async: true,
+        clientRequestId,
+      }),
     });
   },
   replyApproval(
@@ -331,7 +385,14 @@ class FamilyLiveClientStore {
 
   private ensureStream(): void {
     if (this.eventSource || typeof EventSource === 'undefined') return;
+    let openedOnce = false;
     const es = new EventSource(`${API_BASE}/events`);
+    es.onopen = () => {
+      if (openedOnce) {
+        void this.refresh(this.activeScopeId).catch(() => undefined);
+      }
+      openedOnce = true;
+    };
     es.onmessage = (ev) => {
       try {
         const parsed = JSON.parse(ev.data) as FamilyRealtimeEvent;

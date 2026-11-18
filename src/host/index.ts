@@ -229,8 +229,9 @@ function registerScopedPhoneToolsOnDshAgent(
           return hub.handlePhoneContacts(scopeId, memberId);
         }
         if (schema.name === 'phone_read_dsh_session') {
-          const limit = typeof args.limit === 'number' && Number.isFinite(args.limit) ? args.limit : 12;
-          return hub.handlePhoneReadDshSession(scopeId, limit);
+          const limit = typeof args.limit === 'number' && Number.isFinite(args.limit) ? args.limit : 25;
+          const query = typeof args.query === 'string' ? args.query : undefined;
+          return hub.handlePhoneReadDshSession(scopeId, limit, query);
         }
         if (schema.name === 'phone_call') {
           const rawIntent = typeof args.intent === 'string' ? args.intent : 'discuss';
@@ -757,6 +758,21 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
         'dsh-agent-family: pre-step-mentions'
       );
 
+      const seenClientRequestIds = new Set<string>();
+      const claimClientRequestId = (rawId: unknown): boolean => {
+        if (typeof rawId !== 'string' || !rawId.trim()) return true;
+        const clean = rawId.trim();
+        if (seenClientRequestIds.has(clean)) {
+          return false;
+        }
+        seenClientRequestIds.add(clean);
+        if (seenClientRequestIds.size > 500) {
+          const first = seenClientRequestIds.values().next().value;
+          if (typeof first === 'string') seenClientRequestIds.delete(first);
+        }
+        return true;
+      };
+
       // 4. 注册 Web / Desktop 工作台 HTTP 路由与 SSE 实时通道
       ctx.inject(['webServer'], (scoped) => {
         if (!scoped.webServer) return;
@@ -785,6 +801,7 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
                   groupEngine,
                   sseClients,
                   hasNativeDshAgents,
+                  claimClientRequestId,
                 });
               },
             }),
@@ -1394,6 +1411,7 @@ async function handleWebApiRequest(params: {
   readonly groupEngine: GroupChatEngine;
   readonly sseClients: Set<DshHttpResponse>;
   readonly hasNativeDshAgents: () => boolean;
+  readonly claimClientRequestId: (rawId: unknown) => boolean;
 }): Promise<void> {
   const {
     ctx,
@@ -1407,6 +1425,7 @@ async function handleWebApiRequest(params: {
     groupEngine,
     sseClients,
     hasNativeDshAgents,
+    claimClientRequestId,
   } = params;
   const url = new URL(req.url ?? '/', 'http://127.0.0.1');
   const subPath = url.pathname.slice(API_PREFIX.length) || '/';
@@ -1557,26 +1576,49 @@ async function handleWebApiRequest(params: {
         writeJson(res, 400, { error: 'memberId 与 message 不能为空。' });
         return;
       }
+      const foundMember = registry.get(memberId);
+      if (!foundMember || !foundMember.enabled) {
+        writeJson(res, 400, { error: `家庭成员 "${memberId}" 不存在或已停用。` });
+        return;
+      }
+      if (!claimClientRequestId(body.clientRequestId)) {
+        writeJson(res, 200, { accepted: true, deduplicated: true });
+        return;
+      }
       const cwd = await resolveSessionCwd(
         ctx,
         scopeId,
         typeof body.cwd === 'string' ? body.cwd : undefined
       );
-      const outcome = await hub.sendMemberMessage({
-        scopeId,
-        memberId,
-        senderRole: 'human',
-        senderName: '你',
-        message,
-        cwd,
-        fresh: body.fresh === true,
-      });
-      if (scopeId !== 'default') {
-        contextBridge.recordReceiptForMainAgent(
+      const runDirect = async () => {
+        const outcome = await hub.sendMemberMessage({
           scopeId,
-          `你在家庭面板与 ${outcome.member.name} (@${outcome.member.id}) 沟通了「${message.slice(0, 100)}」，结论：${outcome.finalText.slice(0, 360)}`
-        );
+          memberId,
+          senderRole: 'human',
+          senderName: '你',
+          message,
+          cwd,
+          fresh: body.fresh === true,
+        });
+        if (scopeId !== 'default') {
+          contextBridge.recordReceiptForMainAgent(
+            scopeId,
+            `你在家庭面板与 ${outcome.member.name} (@${outcome.member.id}) 沟通了「${message.slice(0, 100)}」，结论：${outcome.finalText.slice(0, 360)}`
+          );
+        }
+        return outcome;
+      };
+
+      // 异步非阻塞模式：2ms 内立即返回 202，避免长耗时任务卡死 Electron HTTP 转发超时导致 Failed to fetch
+      if (body.async === true) {
+        writeJson(res, 202, { accepted: true });
+        void runDirect().catch((err: unknown) => {
+          ctx.logger?.warn?.('[dsh-agent-family] 后台私聊任务结束或中断:', err);
+        });
+        return;
       }
+
+      const outcome = await runDirect();
       writeJson(res, 200, {
         finalText: outcome.finalText,
         snapshot: hub.getMemberSnapshot(scopeId, memberId),
@@ -1676,30 +1718,48 @@ async function handleWebApiRequest(params: {
         writeJson(res, 400, { error: '群聊发言内容不能为空。' });
         return;
       }
+      if (!claimClientRequestId(body.clientRequestId)) {
+        writeJson(res, 200, { accepted: true, deduplicated: true });
+        return;
+      }
       const cwd = await resolveSessionCwd(
         ctx,
         scopeId,
         typeof body.cwd === 'string' ? body.cwd : undefined
       );
       const beforeLen = groupEngine.getRoom(scopeId, groupId)?.messages.length ?? 0;
-      const room = await groupEngine.postMessage({
-        scopeId,
-        groupId,
-        senderId: 'human',
-        senderName: '你',
-        senderAvatar: '🧑‍💻',
-        content,
-        cwd,
-      });
-      if (scopeId !== 'default') {
-        const added = room.messages.slice(beforeLen + 1);
-        if (added.length > 0) {
-          contextBridge.recordReceiptForMainAgent(
-            scopeId,
-            `家庭群聊「${room.title}」围绕「${content.slice(0, 80)}」新增回复：${added.map((m) => `${m.senderName}: ${m.content.slice(0, 180)}`).join(' | ')}`
-          );
+      const runGroup = async () => {
+        const room = await groupEngine.postMessage({
+          scopeId,
+          groupId,
+          senderId: 'human',
+          senderName: '你',
+          senderAvatar: '🧑‍💻',
+          content,
+          cwd,
+        });
+        if (scopeId !== 'default') {
+          const added = room.messages.slice(beforeLen + 1);
+          if (added.length > 0) {
+            contextBridge.recordReceiptForMainAgent(
+              scopeId,
+              `家庭群聊「${room.title}」围绕「${content.slice(0, 80)}」新增回复：${added.map((m) => `${m.senderName}: ${m.content.slice(0, 180)}`).join(' | ')}`
+            );
+          }
         }
+        return room;
+      };
+
+      // 异步非阻塞模式：2ms 内立即返回 202，进度与回复全量走 SSE 推送，根治长耗时群聊 Failed to fetch
+      if (body.async === true) {
+        writeJson(res, 202, { accepted: true });
+        void runGroup().catch((err: unknown) => {
+          ctx.logger?.warn?.('[dsh-agent-family] 后台群聊轮次结束或中断:', err);
+        });
+        return;
       }
+
+      const room = await runGroup();
       writeJson(res, 200, { room });
       return;
     }

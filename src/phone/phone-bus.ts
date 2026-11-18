@@ -95,13 +95,17 @@ const PHONE_TOOL_SCHEMAS = [
     {
       name: 'phone_read_dsh_session',
       description:
-        '按需读取当前关联 DSH 主工作台会话的近期对话脉络、用户原始诉求与涉及修改的文件路径（默认最近 12 条）。当增量简报不足以判断具体报错或背景时可主动调用。',
+        '按需读取或按关键词检索当前关联 DSH 主工作台会话的对话记录、用户诉求与涉及文件路径（支持 query 关键词全文筛选，或 limit 读取最近最多 60 条）。',
       inputSchema: {
         type: 'object',
         properties: {
+          query: {
+            type: 'string',
+            description: '可选：按关键词筛选历史对话（如包名、文件名或报错词，不区分大小写）',
+          },
           limit: {
             type: 'number',
-            description: '可选：读取最近多少条关键记录（1~30，默认 12）',
+            description: '可选：读取最近多少条记录（1~60，默认 25）',
           },
         },
         additionalProperties: false,
@@ -423,8 +427,9 @@ export class FamilyPhoneBus {
     }
 
     if (toolName === 'phone_read_dsh_session') {
-      const limit = typeof args.limit === 'number' && Number.isFinite(args.limit) ? args.limit : 12;
-      return this.hub.handlePhoneReadDshSession(scopeId, limit);
+      const limit = typeof args.limit === 'number' && Number.isFinite(args.limit) ? args.limit : 25;
+      const query = typeof args.query === 'string' ? args.query : undefined;
+      return this.hub.handlePhoneReadDshSession(scopeId, limit, query);
     }
 
     throw new Error(`未知的家庭手机功能: ${toolName}`);

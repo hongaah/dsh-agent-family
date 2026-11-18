@@ -567,11 +567,15 @@ export class FamilyHub {
     return ['【智能体家庭通讯录】', ...lines, ...roomLines].join('\n');
   }
 
-  public handlePhoneReadDshSession(scopeId: string, maxItems: number = 12): string {
+  public handlePhoneReadDshSession(
+    scopeId: string,
+    maxItems: number = 25,
+    query?: string
+  ): string {
     if (!this.contextBridge) {
       return '当前环境未挂载 DSH 主会话上下文桥接服务。';
     }
-    return this.contextBridge.readRecentTranscript(scopeId, maxItems);
+    return this.contextBridge.readRecentTranscript(scopeId, maxItems, query);
   }
 
   public async handlePhoneCall(params: {

@@ -118,29 +118,40 @@ export class DshSessionContextBridge {
       return '';
     }
 
-    const recentTurns = turnsSummary.slice(-8);
-    const recentFiles = touchedFiles.slice(-12);
+    const selectedTurns =
+      turnsSummary.length <= 10
+        ? turnsSummary
+        : [
+            ...turnsSummary.slice(0, 2),
+            `  ...（中间省略 ${turnsSummary.length - 10} 条记录，如需按关键词或完整历史查阅请调用 phone_read_dsh_session）...`,
+            ...turnsSummary.slice(-8),
+          ];
+    const recentFiles = touchedFiles.slice(-15);
     const headerLines: string[] = ['<dsh_session_context>'];
     headerLines.push(
       `【当前关联的 DSH 主会话增量背景简报】(cwd: ${session.header.cwd ?? '当前工作区'}${session.header.title ? `, 会话标题: ${String(session.header.title)}` : ''})`
     );
     if (recentFiles.length > 0) {
-      headerLines.push(`主会话近期涉及文件：${recentFiles.join(', ')}`);
+      headerLines.push(`主会话涉及文件：${recentFiles.join(', ')}`);
     }
-    if (recentTurns.length > 0) {
-      headerLines.push('近期对话脉络：');
-      headerLines.push(...recentTurns);
+    if (selectedTurns.length > 0) {
+      headerLines.push('会话关键对话脉络：');
+      headerLines.push(...selectedTurns);
     }
     headerLines.push(
-      '（提示：若需查看主会话更早或更详细的对话记录，可随时调用随身手机工具 `phone_read_dsh_session`。）'
+      '（提示：若用户问及更早的讨论细节或特定关键词，请主动调用随身手机工具 `phone_read_dsh_session` 查阅完整会话记录，切勿凭空猜测。）'
     );
     headerLines.push('</dsh_session_context>');
 
     const joined = headerLines.join('\n');
-    return joined.length > 2200 ? `${joined.slice(0, 2180)}…\n</dsh_session_context>` : joined;
+    return joined.length > 2600 ? `${joined.slice(0, 2580)}…\n</dsh_session_context>` : joined;
   }
 
-  public readRecentTranscript(sessionId: string, maxItems: number = 12): string {
+  public readRecentTranscript(
+    sessionId: string,
+    maxItems: number = 25,
+    query?: string
+  ): string {
     if (!sessionId || sessionId === 'default') {
       return '当前处于默认独立工作台，未绑定具体的外部 DSH 会话。';
     }
@@ -155,10 +166,10 @@ export class DshSessionContextBridge {
 
     for (const ev of allEvents) {
       if (ev.type === 'user/message') {
-        const text = extractBlocksText(ev.data.message ?? ev.data, 600);
+        const text = extractBlocksText(ev.data.message ?? ev.data, 700);
         if (text) lines.push(`[用户 #${ev.seq}]: ${text}`);
       } else if (ev.type === 'assistant/message') {
-        const text = extractBlocksText(ev.data.message, 700);
+        const text = extractBlocksText(ev.data.message, 800);
         if (text) lines.push(`[DSH 主对话 #${ev.seq}]: ${text}`);
       } else if (ev.type === 'tool/call') {
         const toolName = typeof ev.data.name === 'string' ? ev.data.name : 'tool';
@@ -172,16 +183,23 @@ export class DshSessionContextBridge {
       }
     }
 
-    const clamped = Math.max(1, Math.min(30, maxItems));
-    const tail = lines.slice(-clamped);
+    const normalizedQuery = query?.trim().toLowerCase() ?? '';
+    const filtered = normalizedQuery
+      ? lines.filter((line) => line.toLowerCase().includes(normalizedQuery))
+      : lines;
+
+    const clamped = Math.max(1, Math.min(60, maxItems));
+    const tail = filtered.slice(-clamped);
     if (tail.length === 0) {
-      return `当前 DSH 会话 (${sessionId}, cwd=${session.header.cwd ?? ''}) 尚无历史对话消息。`;
+      return normalizedQuery
+        ? `在当前 DSH 会话 (${sessionId}, 共 ${lines.length} 条记录) 中未检索到包含 "${query?.trim()}" 的记录。`
+        : `当前 DSH 会话 (${sessionId}, cwd=${session.header.cwd ?? ''}) 尚无历史对话消息。`;
     }
 
     return [
-      `【DSH 主会话 (${sessionId}) 最近 ${tail.length} 条记录】`,
+      `【DSH 主会话 (${sessionId}) ${normalizedQuery ? `关键词 "${query?.trim()}" 匹配结果` : `最近 ${tail.length}/${lines.length} 条记录`}】`,
       `工作目录: ${session.header.cwd ?? '未知'}`,
-      ...(files.length > 0 ? [`涉及文件: ${files.slice(-15).join(', ')}`] : []),
+      ...(files.length > 0 ? [`涉及文件: ${files.slice(-20).join(', ')}`] : []),
       `---`,
       ...tail,
     ].join('\n');

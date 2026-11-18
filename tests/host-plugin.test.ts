@@ -683,5 +683,34 @@ describe('Cordis Host Plugin (Tools, SystemPrompt, @Mention Pre-Step, Web API & 
         'family_collaboration_receipt'
       );
     }
+
+    // 4. 验证 async: true 立即返回 202（彻底避免长耗时群聊触发 Electron Failed to fetch 超时）且支持 clientRequestId 幂等去重
+    const asyncReqId = 'req-dedup-1001';
+    const post1 = await fetch(`${base}/dsh-agent-family/api/groups/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scopeId: 'dsh-main-sess-99',
+        groupId: 'family-main',
+        content: '异步非阻塞群聊测试',
+        async: true,
+        clientRequestId: asyncReqId,
+      }),
+    });
+    expect(post1.status).toBe(202);
+
+    const post2Dup = await fetch(`${base}/dsh-agent-family/api/groups/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scopeId: 'dsh-main-sess-99',
+        groupId: 'family-main',
+        content: '异步非阻塞群聊测试',
+        async: true,
+        clientRequestId: asyncReqId,
+      }),
+    });
+    const dupJson = (await post2Dup.json()) as { deduplicated?: boolean };
+    expect(dupJson.deduplicated).toBe(true);
   });
 });
