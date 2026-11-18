@@ -214,6 +214,11 @@ export class GroupChatEngine {
       }
     }
 
+    // 并行预热排在后面的未唤醒成员 CLI 身体，消除群聊串行冷启动延迟
+    for (const upcomingId of speakerQueue.slice(1)) {
+      void this.hub.prewarmMember(input.scopeId, upcomingId, input.cwd);
+    }
+
     let substantiveTurns = 0;
     let totalChecks = 0;
     const maxTotalChecks = MAX_GROUP_RELAY_TURNS + activeMembers.length + 2;
@@ -400,20 +405,20 @@ export class GroupChatEngine {
       .join('\n\n');
 
     const passGuideline = allowPass
-      ? `4. 若前面成员已经说得很完善、当前不需要你插话，请只回复 \`[PASS]\` 保持安静旁听。`
-      : `4. 当前本轮还没有其他成员回应，请直接自然回应群内消息，不要回复 \`[PASS]\`。`;
+      ? `- 若前面的家人已经接得很自然到位、你没什么特别想补充或吐槽的，请只回复 \`[PASS]\` 安静旁听，不必硬凑客套话。`
+      : `- 当前群里还没人接话，请用你自己的性格自然回应，不要回复 \`[PASS]\`。`;
 
     return [
-      `👥 【家庭群聊「${room.title}」未读新消息】`,
-      `群内其他在岗成员：${peersDesc || '暂无其他成员'}`,
+      `🏠 【家庭群聊「${room.title}」新消息】`,
+      `群里的家人：${peersDesc || '暂无其他成员'}`,
       `---`,
       transcript,
       `---`,
-      `【你的群聊回应准则】`,
-      `1. 你现在正拿着群聊话筒，回复内容将直接发到「${room.title}」群里，无需再调用 phone_group_discuss 工具；`,
-      `2. 请结合你的专长（${receiver.specialty}）直接发表具体方案、认领动作、指出前面成员方案的问题或明确拒绝不合理诉求；`,
-      `3. 若需要群里某位成员接着表态或配合，请在回复中用 \`@成员ID\` 点名 TA；`,
-      passGuideline,
+      `（群聊发言默契：`,
+      `- 你现在直接在「${room.title}」群里说话，直接输出你想说的话即可，无需调用 phone_group_discuss 工具；`,
+      `- **自动分辨「日常闲聊」与「正经干活」**：如果上面只是问候、日常闲聊、吐槽、聊生活或活跃气氛，请彻底卸下工作包袱和班味，按你自己的脾气性格自然接梗、关心或跟家人互怼逗乐（口语化、简短有温度），**严禁主动扯代码/架构/工作内容，更严禁在群里给别人派活或安排任务**！只有当大家明确提出具体开发任务、Bug 或技术方案探讨时，再结合你的看家手艺（${receiver.specialty}）认真发表见解或推进；`,
+      `- 像真人一家人聊天一样自然互动，除非确实有话要专门问某位家人，否则不要乱 \`@成员ID\` 点名派活；`,
+      `${passGuideline}）`,
     ].join('\n');
   }
 

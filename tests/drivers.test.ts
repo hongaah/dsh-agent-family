@@ -310,6 +310,81 @@ describe('Four Bidirectional Body Drivers', () => {
     await session.dispose();
   });
 
+  it('CodexDriver passes model & effort on turn/start and hot-switches them in-place via session.reconfigure()', async () => {
+    const fakeCodex = writeExecutableScript(
+      tempDir,
+      'mock-codex-modelswitch.mjs',
+      `
+      import readline from 'node:readline';
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.on('line', (line) => {
+        const msg = JSON.parse(line);
+        if (msg.method === 'initialize') {
+          process.stdout.write(JSON.stringify({ id: msg.id, result: { userAgent: 'mock-codex' } }) + '\\n');
+        } else if (msg.method === 'thread/start') {
+          process.stdout.write(JSON.stringify({ id: msg.id, result: { thread: { id: 'thr_ms' } } }) + '\\n');
+        } else if (msg.method === 'turn/start') {
+          const m = msg.params.model ?? 'default';
+          const e = msg.params.effort ?? 'default';
+          process.stdout.write(JSON.stringify({ id: msg.id, result: { turn: { id: 'turn_ms' } } }) + '\\n');
+          process.stdout.write(JSON.stringify({
+            method: 'item/agentMessage/delta',
+            params: { threadId: 'thr_ms', turnId: 'turn_ms', itemId: 'im', delta: m + '@' + e }
+          }) + '\\n');
+          process.stdout.write(JSON.stringify({
+            method: 'turn/completed',
+            params: { threadId: 'thr_ms', turn: { id: 'turn_ms', status: 'completed' } }
+          }) + '\\n');
+        }
+      });
+      `
+    );
+
+    const driver = new CodexDriver();
+    const member: FamilyMember = {
+      ...makeMember('fe-codex', 'codex', fakeCodex),
+      body: {
+        kind: 'codex',
+        command: fakeCodex,
+        model: 'auto/gpt-5.4',
+        reasoningEffort: 'high',
+      },
+    };
+    const controller = new AbortController();
+    const session = await driver.awaken({
+      scopeId: 's1',
+      member,
+      composedSoul: '小前端',
+      cwd: tempDir,
+      phoneMcp: makePhoneSpec(),
+      signal: controller.signal,
+    });
+
+    const out1: MemberStreamEvent[] = [];
+    for await (const ev of session.sendTurn('hi', controller.signal)) out1.push(ev);
+    expect(out1.find((e) => e.kind === 'turn_done')).toEqual({
+      kind: 'turn_done',
+      finalText: 'auto/gpt-5.4@high',
+    });
+
+    const hotOk = await session.reconfigure?.({
+      kind: 'codex',
+      command: fakeCodex,
+      model: 'auto/gpt-5.4-mini',
+      reasoningEffort: 'low',
+    });
+    expect(hotOk).toBe(true);
+
+    const out2: MemberStreamEvent[] = [];
+    for await (const ev of session.sendTurn('fast', controller.signal)) out2.push(ev);
+    expect(out2.find((e) => e.kind === 'turn_done')).toEqual({
+      kind: 'turn_done',
+      finalText: 'auto/gpt-5.4-mini@low',
+    });
+
+    await session.dispose();
+  });
+
   it('OpenCodeDriver drives opencode acp, attaches HTTP family_phone MCP, injects soul once, and forwards native permission options verbatim', async () => {
     const fakeOpenCode = writeExecutableScript(
       tempDir,

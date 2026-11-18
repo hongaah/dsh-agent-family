@@ -43,10 +43,18 @@ export class DshNativeDriver implements BodyDriver {
       const bridge = this.bridge;
       let alive = true;
       let turnIndex = 0;
+      let currentMember: FamilyMember = context.member;
 
       return {
         bodyKind: 'dsh',
         isAlive: () => alive,
+        reconfigure: async (nextBody): Promise<boolean> => {
+          currentMember = {
+            ...currentMember,
+            body: nextBody,
+          };
+          return true;
+        },
         sendTurn: (prompt: string, signal: AbortSignal): AsyncIterable<MemberStreamEvent> => {
           if (!alive) {
             throw new Error('DSH 原生成员会话已关闭。');
@@ -59,7 +67,7 @@ export class DshNativeDriver implements BodyDriver {
           void bridge
             .runTurn({
               scopeId: context.scopeId,
-              member: context.member,
+              member: currentMember,
               composedSoul: context.composedSoul,
               cwd: context.cwd,
               prompt,

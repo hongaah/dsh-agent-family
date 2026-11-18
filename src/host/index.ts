@@ -10,9 +10,13 @@ import {
   MemberRegistry,
   STARTER_MEMBER_TEMPLATES,
 } from '../core/member-registry.ts';
+import { ModelCatalogService } from '../core/model-catalog.ts';
 import type {
+  BodyKind,
+  BodyModelOption,
   BodySpec,
   CreateMemberInput,
+  FamilyMember,
   FamilyRealtimeEvent,
   PhoneCallIntent,
   UpdateMemberInput,
@@ -32,6 +36,8 @@ import type {
   DshHostContext,
   DshHttpRequest,
   DshHttpResponse,
+  DshLlmService,
+  DshModelSelection,
   DshOwnedAgentHandle,
   DshPreStepDecision,
   DshPreStepMessage,
@@ -170,12 +176,17 @@ function parseBodySpecFromPayload(raw: unknown): BodySpec | undefined {
   if (kind !== 'claude' && kind !== 'codex' && kind !== 'opencode' && kind !== 'dsh') {
     return undefined;
   }
+  const model = typeof obj.model === 'string' ? obj.model : undefined;
+  const reasoningEffort =
+    typeof obj.reasoningEffort === 'string' ? obj.reasoningEffort : undefined;
   const command = typeof obj.command === 'string' ? obj.command : undefined;
   const extraArgs = Array.isArray(obj.extraArgs)
     ? obj.extraArgs.filter((item): item is string => typeof item === 'string')
     : undefined;
   return {
     kind,
+    ...(model !== undefined ? { model } : {}),
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(command !== undefined ? { command } : {}),
     ...(extraArgs !== undefined ? { extraArgs } : {}),
   };
@@ -257,7 +268,7 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
         return typeof agentsSvc?.create === 'function';
       };
 
-      const resolveDshModelRoute = (scopeId: string) => {
+      const resolveDshModelRoute = (scopeId: string): DshModelSelection | undefined => {
         const observed = observedAgents.get(scopeId);
         const agentsSvc = ctx.get('agents') as DshAgentsRegistry | undefined;
         const liveSessionAgent = observed ?? agentsSvc?.get?.(scopeId);
@@ -272,6 +283,97 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
         }
         return undefined;
       };
+
+      const resolveMemberDshRoute = (
+        scopeId: string,
+        member: FamilyMember
+      ): DshModelSelection | undefined => {
+        const baseRoute = resolveDshModelRoute(scopeId);
+        const customModel = member.body.model?.trim();
+        const customEffort = member.body.reasoningEffort?.trim();
+
+        let provider = baseRoute?.provider ?? 'deepseek-account';
+        let model = baseRoute?.model ?? '';
+        if (customModel) {
+          const slashIdx = customModel.indexOf('/');
+          if (slashIdx > 0) {
+            provider = customModel.slice(0, slashIdx);
+            model = customModel.slice(slashIdx + 1);
+          } else {
+            model = customModel;
+          }
+        }
+        if (!provider || !model) {
+          return undefined;
+        }
+        const reasoningEffort = customEffort || baseRoute?.reasoningEffort;
+        return {
+          provider,
+          model,
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+        };
+      };
+
+      const modelCatalog = new ModelCatalogService({
+        locatorOptions: { hasDshHostRuntime: hasNativeDshAgents() },
+        dshCatalogProvider: async () => {
+          const defaultSvc = ctx.get('agentDefaultModel') as DshAgentDefaultModelService | undefined;
+          const defSel = defaultSvc?.currentSelection?.();
+          const currentDefault =
+            defSel?.provider && defSel.model ? `${defSel.provider}/${defSel.model}` : undefined;
+
+          const llmSvc = ctx.get('llm') as DshLlmService | undefined;
+          const providers = llmSvc?.listProviders?.() ?? [];
+          const discovered: BodyModelOption[] = [];
+          const seen = new Set<string>();
+
+          for (const prov of providers) {
+            const list = (await llmSvc?.listModels?.(prov.id).catch(() => [])) ?? [];
+            for (const m of list) {
+              const fullId = `${prov.id}/${m.id}`;
+              if (seen.has(fullId)) continue;
+              seen.add(fullId);
+              discovered.push({
+                id: fullId,
+                label: m.name ? `${m.name} · ${prov.name}` : fullId,
+                isDefault: fullId === currentDefault,
+                supportedEfforts: m.reasoningEfforts ? [...m.reasoningEfforts] : ['low', 'medium', 'high'],
+              });
+            }
+          }
+
+          if (currentDefault && !seen.has(currentDefault)) {
+            discovered.unshift({
+              id: currentDefault,
+              label: `${currentDefault} (当前宿主默认)`,
+              isDefault: true,
+              supportedEfforts: ['low', 'medium', 'high'],
+            });
+          }
+
+          if (discovered.length === 0) {
+            const fallbackProvider = defSel?.provider ?? 'deepseek-account';
+            discovered.push(
+              {
+                id: `${fallbackProvider}/deepseek-chat`,
+                label: 'DeepSeek Chat (极速日常推荐)',
+                isFast: true,
+                supportedEfforts: ['low', 'medium', 'high'],
+              },
+              {
+                id: `${fallbackProvider}/deepseek-reasoner`,
+                label: 'DeepSeek Reasoner (深度推理)',
+                supportedEfforts: ['low', 'medium', 'high'],
+              }
+            );
+          }
+
+          return {
+            ...(currentDefault ? { currentDefault } : {}),
+            models: discovered,
+          };
+        },
+      });
 
       let hubRef: FamilyHub | null = null;
 
@@ -293,19 +395,21 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
           }
 
           const key = `${scopeId}::${member.id}`;
+          const desiredRoute = resolveMemberDshRoute(scopeId, member);
           let handle = managedDshHandles.get(key);
 
           if (!handle) {
-            const route = resolveDshModelRoute(scopeId);
             const sessionId = `family-${member.id}-${randomUUID().slice(0, 8)}`;
             handle = await agentsSvc.create({
               sessionId,
               meta: { cwd },
-              agentOptions: route
+              agentOptions: desiredRoute
                 ? {
-                    provider: route.provider,
-                    model: route.model,
-                    ...(route.reasoningEffort ? { reasoningEffort: route.reasoningEffort } : {}),
+                    provider: desiredRoute.provider,
+                    model: desiredRoute.model,
+                    ...(desiredRoute.reasoningEffort
+                      ? { reasoningEffort: desiredRoute.reasoningEffort }
+                      : {}),
                   }
                 : {},
               signal,
@@ -326,6 +430,12 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
               },
             });
             managedDshHandles.set(key, handle);
+          } else if (desiredRoute) {
+            try {
+              handle.agent.model?.select?.(desiredRoute);
+            } catch {
+              // ignore if mock agent in tests omits model.select
+            }
           }
 
           const ownedAgent = handle.agent;
@@ -650,6 +760,7 @@ export function createFamilyHostPlugin(options: FamilyHostPluginOptions = {}) {
                   res,
                   registry,
                   avatarStore,
+                  modelCatalog,
                   hub,
                   groupEngine,
                   sseClients,
@@ -993,13 +1104,24 @@ async function handleWebApiRequest(params: {
   readonly res: DshHttpResponse;
   readonly registry: MemberRegistry;
   readonly avatarStore: AvatarStore;
+  readonly modelCatalog: ModelCatalogService;
   readonly hub: FamilyHub;
   readonly groupEngine: GroupChatEngine;
   readonly sseClients: Set<DshHttpResponse>;
   readonly hasNativeDshAgents: () => boolean;
 }): Promise<void> {
-  const { ctx, req, res, registry, avatarStore, hub, groupEngine, sseClients, hasNativeDshAgents } =
-    params;
+  const {
+    ctx,
+    req,
+    res,
+    registry,
+    avatarStore,
+    modelCatalog,
+    hub,
+    groupEngine,
+    sseClients,
+    hasNativeDshAgents,
+  } = params;
   const url = new URL(req.url ?? '/', 'http://127.0.0.1');
   const subPath = url.pathname.slice(API_PREFIX.length) || '/';
   const method = (req.method ?? 'GET').toUpperCase();
@@ -1060,6 +1182,18 @@ async function handleWebApiRequest(params: {
         callRecords: hub.listPhoneCallRecords(scopeId),
         pendingApprovals: hub.listPendingApprovals(),
       });
+      return;
+    }
+
+    if (method === 'GET' && subPath === '/models') {
+      const rawKind = url.searchParams.get('kind') ?? 'codex';
+      const kind: BodyKind =
+        rawKind === 'claude' || rawKind === 'codex' || rawKind === 'opencode' || rawKind === 'dsh'
+          ? rawKind
+          : 'codex';
+      const forceRefresh = url.searchParams.get('refresh') === '1';
+      const catalog = await modelCatalog.getCatalog(kind, forceRefresh);
+      writeJson(res, 200, { catalog });
       return;
     }
 

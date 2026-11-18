@@ -83,12 +83,16 @@ function normalizeBodySpec(input: BodySpec): BodySpec {
   if (!isBodyKind(input.kind)) {
     throw new Error(`不支持的身体类型: ${String(input.kind)}`);
   }
+  const model = input.model?.trim();
+  const reasoningEffort = input.reasoningEffort?.trim();
   const command = input.command?.trim();
   const extraArgs = (input.extraArgs ?? [])
     .map((arg) => arg.trim())
     .filter((arg) => arg.length > 0);
   return {
     kind: input.kind,
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(command ? { command } : {}),
     ...(extraArgs.length > 0 ? { extraArgs } : {}),
   };
@@ -139,6 +143,9 @@ function parsePersistedMembers(raw: unknown): FamilyMember[] {
       specialty: candidate.specialty,
       body: normalizeBodySpec({
         kind: bodyRaw.kind,
+        model: typeof bodyRaw.model === 'string' ? bodyRaw.model : undefined,
+        reasoningEffort:
+          typeof bodyRaw.reasoningEffort === 'string' ? bodyRaw.reasoningEffort : undefined,
         command: typeof bodyRaw.command === 'string' ? bodyRaw.command : undefined,
         extraArgs: extraArgsRaw,
       }),

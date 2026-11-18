@@ -28,6 +28,11 @@ import { familyClientApi, useFamilyLiveState } from './api.ts';
 import { CommandPalette } from './CommandPalette.tsx';
 import { MemberAvatar } from './MemberAvatar.tsx';
 import { MemberSheet } from './MemberSheet.tsx';
+import {
+  formatShortModelBadge,
+  GroupMembersModelPopover,
+  MemberModelQuickPopover,
+} from './ModelQuickPopover.tsx';
 import { RichMessageContent } from './RichMessageContent.tsx';
 import { SmartComposer } from './SmartComposer.tsx';
 
@@ -829,15 +834,19 @@ export function FamilyWorkbench({
                     </div>
                     <div style={{ fontSize: 11.5, color: 'var(--sh-muted-fg)' }}>
                       {activeGroupRoom.activeSpeakerId
-                        ? `@${activeGroupRoom.activeSpeakerId} 正在拿着话筒发言…`
+                        ? `@${activeGroupRoom.activeSpeakerId} 正在说话…`
                         : activeGroupRoom.lastPassMemberName
-                          ? `${activeGroupRoom.lastPassMemberName} 已阅（无额外补充）`
-                          : '支持 @成员 点名接龙、实时流式发言与跨成员方案争辩'}
+                          ? `${activeGroupRoom.lastPassMemberName} 已阅（微笑旁听）`
+                          : '一家人唠嗑闲聊与技术协作空间 · 支持 @点名互动'}
                     </div>
                   </div>
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <GroupMembersModelPopover
+                    members={groupParticipantMembers}
+                    onUpdated={() => void refresh()}
+                  />
                   {activeGroupRoom.messages.length > 0 && (
                     <button
                       type="button"
@@ -1039,7 +1048,7 @@ export function FamilyWorkbench({
 
               <SmartComposer
                 mode="group"
-                placeholder="输入 @ 点名成员发言，或直接布置协作议题…"
+                placeholder="在家庭群里随口聊聊家常，或输入 @ 点名讨论正事…"
                 members={groupParticipantMembers}
                 isBusy={activeGroupRoom.running}
                 sendFresh={false}
@@ -1094,6 +1103,10 @@ export function FamilyWorkbench({
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  <MemberModelQuickPopover
+                    member={activeMember}
+                    onUpdated={() => void refresh()}
+                  />
                   <button
                     type="button"
                     className="sh-btn sh-btn-ghost sh-btn-sm"
@@ -1395,9 +1408,15 @@ export function FamilyWorkbench({
                       />
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontWeight: 600, fontSize: 13.5 }}>{activeMember.name}</div>
-                        <div style={{ display: 'flex', gap: 5, marginTop: 3 }}>
+                        <div style={{ display: 'flex', gap: 5, marginTop: 3, flexWrap: 'wrap' }}>
                           <span className="sh-badge">@{activeMember.id}</span>
                           <span className="sh-badge">{activeMember.body.kind}</span>
+                          <span className="sh-badge">
+                            {formatShortModelBadge(
+                              activeMember.body.model,
+                              activeMember.body.reasoningEffort
+                            )}
+                          </span>
                         </div>
                       </div>
                     </div>

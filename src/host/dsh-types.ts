@@ -43,6 +43,23 @@ export interface DshModelSelection {
   readonly reasoningEffort?: string;
 }
 
+export interface DshLlmProviderInfo {
+  readonly id: string;
+  readonly name: string;
+}
+
+export interface DshLlmModelMetadata {
+  readonly provider: string;
+  readonly id: string;
+  readonly name?: string;
+  readonly reasoningEfforts?: readonly string[];
+}
+
+export interface DshLlmService {
+  listProviders?(): readonly DshLlmProviderInfo[];
+  listModels?(provider: string): Promise<readonly DshLlmModelMetadata[]>;
+}
+
 export interface DshAgentDefaultModelService {
   currentSelection?(): DshModelSelection | undefined;
 }
@@ -104,6 +121,7 @@ export interface DshOwnedAgent {
   readonly ctx: DshAgentScopedContext;
   readonly model?: {
     current?(): DshModelSelection | undefined;
+    select?(selection: DshModelSelection): void;
   };
   followup(message: Record<string, unknown>): void;
   cancel?(cause: { readonly kind: 'user' | 'disposed' }): void;

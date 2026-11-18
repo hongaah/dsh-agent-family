@@ -35,6 +35,9 @@ export class ClaudeDriver implements BodyDriver {
       },
     });
 
+    let activeModel = context.member.body.model?.trim() ?? '';
+    const activeEffort = context.member.body.reasoningEffort?.trim() ?? '';
+
     const args: string[] = [
       '-p',
       '--verbose',
@@ -47,6 +50,8 @@ export class ClaudeDriver implements BodyDriver {
       'stdio',
       '--allowedTools',
       'mcp__family_phone__*',
+      ...(activeModel ? ['--model', activeModel] : []),
+      ...(activeEffort ? ['--effort', activeEffort] : []),
       '--append-system-prompt',
       context.composedSoul,
       '--mcp-config',
@@ -164,6 +169,35 @@ export class ClaudeDriver implements BodyDriver {
     return {
       bodyKind: 'claude',
       isAlive: () => proc.isAlive(),
+      reconfigure: async (nextBody): Promise<boolean> => {
+        const nextEffort = nextBody.reasoningEffort?.trim() ?? '';
+        const nextModel = nextBody.model?.trim() ?? '';
+        // effort 在 Claude CLI 中为启动级参数，变更时交由 FamilyHub 在空闲时重启进程生效
+        if (nextEffort !== activeEffort) {
+          return false;
+        }
+        if (activeModel && !nextModel) {
+          return false;
+        }
+        if (nextModel && nextModel !== activeModel) {
+          if (!proc.isAlive()) return false;
+          try {
+            proc.writeJsonLine({
+              type: 'control_request',
+              request_id: `set-model-${Date.now()}`,
+              request: {
+                subtype: 'set_model',
+                model: nextModel,
+              },
+            });
+            activeModel = nextModel;
+            return true;
+          } catch {
+            return false;
+          }
+        }
+        return true;
+      },
       sendTurn: (prompt: string, signal: AbortSignal): AsyncIterable<MemberStreamEvent> => {
         if (!proc.isAlive()) {
           throw new Error('Claude Code 身体进程已离线。');

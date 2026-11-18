@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import type {
   BodyHealthStatus,
   BodyKind,
+  BodyModelCatalog,
   CreateMemberInput,
   FamilyGroupRoom,
   FamilyMember,
@@ -136,6 +137,16 @@ export const familyClientApi = {
   },
   probeBodies(): Promise<{ bodies: readonly BodyHealthStatus[] }> {
     return requestJson<{ bodies: readonly BodyHealthStatus[] }>('/probe', { method: 'POST' });
+  },
+  listBodyModels(
+    kind: BodyKind,
+    refresh: boolean = false
+  ): Promise<{ catalog: BodyModelCatalog }> {
+    const qs = new URLSearchParams({
+      kind,
+      ...(refresh ? { refresh: '1' } : {}),
+    }).toString();
+    return requestJson<{ catalog: BodyModelCatalog }>(`/models?${qs}`);
   },
   seedTemplates(preferredBody?: BodyKind): Promise<{ members: readonly FamilyMember[] }> {
     return requestJson<{ members: readonly FamilyMember[] }>('/members/seed', {

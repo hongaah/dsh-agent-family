@@ -11,10 +11,31 @@ export type BodyKind = (typeof BODY_KINDS)[number];
 
 export interface BodySpec {
   readonly kind: BodyKind;
+  /** 可选模型标识覆盖；留空或省略表示跟随该 CLI 自身默认配置 */
+  readonly model?: string;
+  /** 可选推理强度/思考快慢覆盖（如 low 秒回、medium 均衡、high 深度、xhigh 满血）；省略表示跟随 CLI 默认 */
+  readonly reasoningEffort?: string;
   /** 可选自定义可执行文件路径或命令名；留空则自动探测本机安装路径 */
   readonly command?: string;
   /** 可选原生启动附加参数；默认空数组，模型与权限均沿用 CLI 自身配置 */
   readonly extraArgs?: readonly string[];
+}
+
+export interface BodyModelOption {
+  readonly id: string;
+  readonly label: string;
+  readonly description?: string;
+  readonly isDefault?: boolean;
+  readonly isFast?: boolean;
+  readonly supportedEfforts?: readonly string[];
+}
+
+export interface BodyModelCatalog {
+  readonly kind: BodyKind;
+  readonly currentDefault?: string;
+  readonly models: readonly BodyModelOption[];
+  readonly supportsEffort: boolean;
+  readonly defaultEfforts: readonly string[];
 }
 
 export interface FamilyMember {

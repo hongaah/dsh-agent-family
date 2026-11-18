@@ -8,6 +8,7 @@ import type { MemberRegistry } from './member-registry.ts';
 import { composeAwakeningSoul } from './soul-composer.ts';
 import type {
   BodyKind,
+  BodySpec,
   FamilyMember,
   FamilyRealtimeEvent,
   MemberActivityState,
@@ -28,6 +29,8 @@ interface MemberActor {
   readonly scopeId: string;
   readonly memberId: string;
   session: LiveMemberSession | null;
+  awakenedBody?: BodySpec;
+  needsReawaken?: boolean;
   cwd: string;
   state: MemberActivityState;
   statusText?: string;
@@ -38,6 +41,29 @@ interface MemberActor {
   activeAbort: AbortController | null;
   currentTurnCallChain: readonly string[];
   currentTurnGroupHold: string | null;
+}
+
+function sameStringArray(a: readonly string[] = [], b: readonly string[] = []): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function requiresProcessRestart(prev: BodySpec, next: BodySpec): boolean {
+  return (
+    prev.kind !== next.kind ||
+    (prev.command ?? '') !== (next.command ?? '') ||
+    !sameStringArray(prev.extraArgs, next.extraArgs)
+  );
+}
+
+function hasModelOrEffortDiff(prev: BodySpec, next: BodySpec): boolean {
+  return (
+    (prev.model ?? '') !== (next.model ?? '') ||
+    (prev.reasoningEffort ?? '') !== (next.reasoningEffort ?? '')
+  );
 }
 
 export interface SendMemberMessageInput {
@@ -95,6 +121,7 @@ export class FamilyHub {
     this.restoreCallsFromDisk();
     this.registry.subscribe((members) => {
       this.emit({ type: 'roster_updated', members });
+      void this.reconcileActorsWithRoster(members);
     });
   }
 
@@ -206,12 +233,62 @@ export class FamilyHub {
     if (actor.session) {
       const oldSession = actor.session;
       actor.session = null;
+      actor.awakenedBody = undefined;
       await oldSession.dispose().catch(() => undefined);
     }
     actor.state = 'sleeping';
     actor.statusText = '已重置休眠，下次派活将唤醒全新身体';
     this.clearActorApprovals(actor);
     this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+  }
+
+  /**
+   * 后台并行预热尚未唤醒的成员 CLI 进程（用于群聊首轮并发消除串行冷启动等待）。
+   * 严格挂载在成员自身的 `queueTail` 串行队列上，杜绝重复唤醒竞态。
+   */
+  public prewarmMember(scopeId: string, memberId: string, cwd: string): Promise<void> {
+    const member = this.registry.get(memberId);
+    if (!member || !member.enabled) return Promise.resolve();
+    const driver = this.drivers.get(member.body.kind);
+    if (!driver) return Promise.resolve();
+    const actor = this.ensureActor(scopeId, member.id, cwd);
+    if (actor.session?.isAlive()) return Promise.resolve();
+
+    const warmTask = async (): Promise<void> => {
+      if (actor.session?.isAlive()) return;
+      const latest = this.registry.get(member.id);
+      if (!latest || !latest.enabled) return;
+      actor.cwd = cwd;
+      const controller = new AbortController();
+      try {
+        const composedSoul = composeAwakeningSoul(latest, this.registry.listEnabled());
+        const phoneMcp = await this.buildPhoneMcpSpec(scopeId, latest.id);
+        actor.session = await driver.awaken({
+          scopeId,
+          member: latest,
+          composedSoul,
+          cwd,
+          phoneMcp,
+          signal: controller.signal,
+        });
+        actor.awakenedBody = latest.body;
+        actor.needsReawaken = false;
+        if (actor.state === 'sleeping') {
+          actor.state = 'idle';
+          actor.statusText = '空闲待命';
+          this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+        }
+      } catch {
+        // 预热异常留待正式发言时按标准错误处理
+      }
+    };
+
+    const p = actor.queueTail.then(warmTask, warmTask);
+    actor.queueTail = p.then(
+      () => undefined,
+      () => undefined
+    );
+    return p;
   }
 
   public async sendMemberMessage(input: SendMemberMessageInput): Promise<SendMemberMessageResult> {
@@ -233,9 +310,11 @@ export class FamilyHub {
 
     const run = async (): Promise<SendMemberMessageResult> => {
       actor.queueLength = Math.max(0, actor.queueLength - 1);
-      if (input.fresh && actor.session) {
+      if ((input.fresh || actor.needsReawaken) && actor.session) {
         const previous = actor.session;
         actor.session = null;
+        actor.awakenedBody = undefined;
+        actor.needsReawaken = false;
         await previous.dispose().catch(() => undefined);
       }
 
@@ -294,6 +373,28 @@ export class FamilyHub {
             phoneMcp,
             signal: turnController.signal,
           });
+          actor.awakenedBody = member.body;
+          actor.needsReawaken = false;
+        } else if (actor.awakenedBody && hasModelOrEffortDiff(actor.awakenedBody, member.body)) {
+          const hotApplied = (await actor.session.reconfigure?.(member.body)) ?? false;
+          if (hotApplied) {
+            actor.awakenedBody = member.body;
+          } else {
+            const stale = actor.session;
+            actor.session = null;
+            await stale.dispose().catch(() => undefined);
+            const composedSoul = composeAwakeningSoul(member, this.registry.listEnabled());
+            const phoneMcp = await this.buildPhoneMcpSpec(input.scopeId, member.id);
+            actor.session = await driver.awaken({
+              scopeId: input.scopeId,
+              member,
+              composedSoul,
+              cwd: input.cwd,
+              phoneMcp,
+              signal: turnController.signal,
+            });
+            actor.awakenedBody = member.body;
+          }
         }
 
         let streamedText = '';
@@ -645,6 +746,66 @@ export class FamilyHub {
     }
     this.actors.clear();
     await Promise.all(disposals);
+  }
+
+  private async reconcileActorsWithRoster(members: readonly FamilyMember[]): Promise<void> {
+    const byId = new Map(members.map((m) => [m.id, m]));
+    for (const actor of this.actors.values()) {
+      if (!actor.session) continue;
+      const latest = byId.get(actor.memberId);
+      if (!latest || !latest.enabled) {
+        if (actor.state === 'idle' || actor.state === 'sleeping') {
+          const old = actor.session;
+          actor.session = null;
+          actor.awakenedBody = undefined;
+          actor.state = 'sleeping';
+          await old.dispose().catch(() => undefined);
+          this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+        } else {
+          actor.needsReawaken = true;
+        }
+        continue;
+      }
+
+      if (!actor.awakenedBody) continue;
+      if (requiresProcessRestart(actor.awakenedBody, latest.body)) {
+        if (actor.state === 'idle') {
+          const old = actor.session;
+          actor.session = null;
+          actor.awakenedBody = undefined;
+          actor.state = 'sleeping';
+          actor.statusText = '身体配置已更新，下次对话将唤醒新身体';
+          await old.dispose().catch(() => undefined);
+          this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+        } else {
+          actor.needsReawaken = true;
+        }
+        continue;
+      }
+
+      if (hasModelOrEffortDiff(actor.awakenedBody, latest.body)) {
+        const applied = (await actor.session.reconfigure?.(latest.body).catch(() => false)) ?? false;
+        if (applied) {
+          actor.awakenedBody = latest.body;
+          if (actor.state === 'idle') {
+            const label = latest.body.model || '默认模型';
+            const effortLabel = latest.body.reasoningEffort ? ` · ${latest.body.reasoningEffort}` : '';
+            actor.statusText = `已切换至 ${label}${effortLabel}`;
+            this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+          }
+        } else if (actor.state === 'idle') {
+          const old = actor.session;
+          actor.session = null;
+          actor.awakenedBody = undefined;
+          actor.state = 'sleeping';
+          actor.statusText = '模型/速度已切换，下次发言立即生效';
+          await old.dispose().catch(() => undefined);
+          this.emit({ type: 'member_runtime', snapshot: this.toSnapshot(actor) });
+        } else {
+          actor.needsReawaken = true;
+        }
+      }
+    }
   }
 
   private async buildPhoneMcpSpec(scopeId: string, callerId: string): Promise<PhoneMcpLaunchSpec> {

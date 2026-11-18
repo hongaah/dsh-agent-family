@@ -34,6 +34,8 @@ export class CodexDriver implements BodyDriver {
 
     let activeQueue: AsyncEventQueue<MemberStreamEvent> | null = null;
     let accumulatedText = '';
+    let currentModel = context.member.body.model?.trim() || undefined;
+    let currentEffort = context.member.body.reasoningEffort?.trim() || undefined;
     const pendingServerRequests = new Map<string, PendingCodexServerRequest>();
 
     const args: string[] = ['app-server', '--stdio', ...(context.member.body.extraArgs ?? [])];
@@ -197,6 +199,7 @@ export class CodexDriver implements BodyDriver {
         {
           cwd: context.cwd,
           developerInstructions: context.composedSoul,
+          ...(currentModel ? { model: currentModel } : {}),
           config: {
             mcp_servers: {
               family_phone: {
@@ -224,6 +227,17 @@ export class CodexDriver implements BodyDriver {
       return {
         bodyKind: 'codex',
         isAlive: () => peer.isAlive(),
+        reconfigure: async (nextBody): Promise<boolean> => {
+          const nextModel = nextBody.model?.trim() || undefined;
+          const nextEffort = nextBody.reasoningEffort?.trim() || undefined;
+          // 若从已指定覆盖切回「跟随默认」，需重开 thread 才能还原 CLI 默认值
+          if ((currentModel && !nextModel) || (currentEffort && !nextEffort)) {
+            return false;
+          }
+          currentModel = nextModel;
+          currentEffort = nextEffort;
+          return true;
+        },
         sendTurn: (prompt: string, signal: AbortSignal): AsyncIterable<MemberStreamEvent> => {
           if (!peer.isAlive()) {
             throw new Error('Codex 身体进程已离线。');
@@ -246,6 +260,8 @@ export class CodexDriver implements BodyDriver {
               'turn/start',
               {
                 threadId,
+                ...(currentModel ? { model: currentModel } : {}),
+                ...(currentEffort ? { effort: currentEffort } : {}),
                 input: [
                   {
                     type: 'text',

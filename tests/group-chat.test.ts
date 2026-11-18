@@ -322,4 +322,35 @@ describe('GroupChatEngine (Family Group Chat, Unread Delta, @Relay, [PASS], and 
     expect(cleared.messages).toHaveLength(0);
     await hub2.dispose();
   });
+
+  it('frames group chat with human warmth and strictly forbids turning casual chat into robotic task-dispatching', async () => {
+    let capturedGroupPrompt = '';
+    const driver = makeMockDriver(async (memberId, prompt) => {
+      if (memberId === 'arch-bro') {
+        capturedGroupPrompt = prompt;
+        return '今天确实够累的，先点杯冰美式歇会儿，代码的事放一边！';
+      }
+      return '[PASS]';
+    });
+
+    const hub = new FamilyHub({ registry, drivers: [driver] });
+    const groupEngine = new GroupChatEngine(hub, registry);
+    hub.attachGroupEngine(groupEngine);
+
+    await groupEngine.postMessage({
+      scopeId: 'warm-scope',
+      groupId: 'family-main',
+      senderId: 'human',
+      senderName: '你',
+      content: '今天好累啊，大家都在摸鱼吗',
+      cwd: tempDir,
+    });
+
+    // 验证群聊包裹词不再强制要求「发表具体方案、认领动作」，而是明确要求日常闲聊卸下班味、不派活
+    expect(capturedGroupPrompt).not.toContain('直接发表具体方案、认领动作');
+    expect(capturedGroupPrompt).toContain('闲聊');
+    expect(capturedGroupPrompt).toContain('派活');
+
+    await hub.dispose();
+  });
 });

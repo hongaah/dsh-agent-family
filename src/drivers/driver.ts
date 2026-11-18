@@ -1,5 +1,6 @@
 import type {
   BodyKind,
+  BodySpec,
   FamilyMember,
   MemberStreamEvent,
   PhoneMcpLaunchSpec,
@@ -17,6 +18,11 @@ export interface AwakenMemberContext {
 export interface LiveMemberSession {
   readonly bodyKind: BodyKind;
   isAlive(): boolean;
+  /**
+   * 尝试在不中断现有上下文记忆的前提下热切换模型或思考强度。
+   * 返回 `true` 表示已在当前常驻会话内即时生效；返回 `false` 表示需在空闲时重启底层 CLI 进程生效。
+   */
+  reconfigure?(nextBody: BodySpec): Promise<boolean>;
   sendTurn(prompt: string, signal: AbortSignal): AsyncIterable<MemberStreamEvent>;
   replyApproval(requestId: string, optionId: string): Promise<void>;
   dispose(): Promise<void>;

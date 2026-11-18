@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, RotateCcw, Search, Upload, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, RefreshCw, RotateCcw, Search, Upload, X } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import { defaultLobeAvatarForBody } from '../core/avatar-spec.ts';
@@ -16,6 +16,7 @@ import {
   MemberAvatar,
   prepareUploadedPhotoDataUrl,
 } from './MemberAvatar.tsx';
+import { EFFORT_PRESETS, useBodyModelCatalog } from './ModelQuickPopover.tsx';
 
 export interface MemberSheetProps {
   readonly open: boolean;
@@ -45,6 +46,8 @@ export function MemberSheet({
   const [avatarManuallyChosen, setAvatarManuallyChosen] = useState<boolean>(false);
   const [formSpecialty, setFormSpecialty] = useState<string>('');
   const [formBodyKind, setFormBodyKind] = useState<BodyKind>('claude');
+  const [formModel, setFormModel] = useState<string>('');
+  const [formEffort, setFormEffort] = useState<string>('');
   const [formCommand, setFormCommand] = useState<string>('');
   const [formExtraArgs, setFormExtraArgs] = useState<string>('');
   const [formSoulPrompt, setFormSoulPrompt] = useState<string>('');
@@ -55,6 +58,9 @@ export function MemberSheet({
   const [errorText, setErrorText] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const { catalog: modelCatalog, loading: loadingModels, reload: reloadModels } =
+    useBodyModelCatalog(formBodyKind, open);
 
   useEffect(() => {
     if (!open) return;
@@ -67,6 +73,8 @@ export function MemberSheet({
       setAvatarManuallyChosen(true);
       setFormSpecialty(editingMember.specialty);
       setFormBodyKind(editingMember.body.kind);
+      setFormModel(editingMember.body.model ?? '');
+      setFormEffort(editingMember.body.reasoningEffort ?? '');
       setFormCommand(editingMember.body.command ?? '');
       setFormExtraArgs((editingMember.body.extraArgs ?? []).join(' '));
       setFormSoulPrompt(editingMember.soulPrompt);
@@ -77,6 +85,8 @@ export function MemberSheet({
       setFormId('');
       setFormName('');
       setFormBodyKind(firstAvailableBody);
+      setFormModel('');
+      setFormEffort('');
       setFormAvatar(defaultLobeAvatarForBody(firstAvailableBody));
       setAvatarManuallyChosen(false);
       setFormSpecialty('');
@@ -141,6 +151,8 @@ export function MemberSheet({
       .filter(Boolean);
     const bodySpec = {
       kind: formBodyKind,
+      ...(formModel.trim() ? { model: formModel.trim() } : {}),
+      ...(formEffort.trim() ? { reasoningEffort: formEffort.trim() } : {}),
       ...(formCommand.trim() ? { command: formCommand.trim() } : {}),
       ...(parsedArgs.length > 0 ? { extraArgs: parsedArgs } : {}),
     };
@@ -410,7 +422,11 @@ export function MemberSheet({
                     key={kind}
                     type="button"
                     onClick={() => {
-                      setFormBodyKind(kind);
+                      if (formBodyKind !== kind) {
+                        setFormBodyKind(kind);
+                        setFormModel('');
+                        setFormEffort('');
+                      }
                       if (!avatarManuallyChosen) {
                         setFormAvatar(defaultLobeAvatarForBody(kind));
                       }
@@ -440,6 +456,110 @@ export function MemberSheet({
                 );
               })}
             </div>
+          </div>
+
+          {/* 模型与思考快慢配置卡片 */}
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 10,
+              border: '1px solid var(--sh-border)',
+              background: 'var(--sh-sidebar)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <div>
+                <div style={{ fontSize: 12.5, fontWeight: 600 }}>
+                  大脑模型与思考快慢（可选）
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--sh-muted-fg)' }}>
+                  留空则跟随 {formBodyKind} 默认配置
+                  {modelCatalog?.currentDefault ? ` (${modelCatalog.currentDefault})` : ''}
+                  ；怕慢可选 Flash / Mini / Haiku 或极速档位
+                </div>
+              </div>
+              <button
+                type="button"
+                className="sh-btn sh-btn-ghost sh-btn-icon"
+                style={{ width: 26, height: 26 }}
+                disabled={loadingModels}
+                title="重新读取本机 CLI 可用模型"
+                onClick={() => void reloadModels()}
+              >
+                <RefreshCw size={12} />
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
+              <select
+                aria-label="快速选择本机 CLI 模型"
+                className="sh-select"
+                value={
+                  (modelCatalog?.models ?? []).some((m) => m.id === formModel) ? formModel : '__custom__'
+                }
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === '__custom__') return;
+                  setFormModel(val);
+                }}
+              >
+                <option value="">跟随 {formBodyKind} 默认模型</option>
+                {(modelCatalog?.models ?? []).map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.isFast ? '⚡ ' : ''}
+                    {m.id}
+                    {m.label && m.label !== m.id ? ` — ${m.label}` : ''}
+                  </option>
+                ))}
+                {formModel && !(modelCatalog?.models ?? []).some((m) => m.id === formModel) && (
+                  <option value="__custom__">自定义: {formModel}</option>
+                )}
+              </select>
+
+              <input
+                className="sh-input"
+                style={{ height: 30, fontSize: 12 }}
+                placeholder="也可直接输入任意模型 ID（留空使用 CLI 默认）"
+                value={formModel}
+                onChange={(e) => setFormModel(e.target.value)}
+              />
+            </div>
+
+            {(!modelCatalog || modelCatalog.supportsEffort) && (
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--sh-muted-fg)', marginBottom: 5 }}>
+                  思考快慢（Reasoning Effort）
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 5 }}>
+                  {EFFORT_PRESETS.map((preset) => {
+                    const active = formEffort === preset.value;
+                    return (
+                      <button
+                        key={preset.value || 'default'}
+                        type="button"
+                        title={preset.title}
+                        onClick={() => setFormEffort(preset.value)}
+                        style={{
+                          height: 28,
+                          borderRadius: 6,
+                          border: `1px solid ${active ? 'var(--sh-fg)' : 'var(--sh-border)'}`,
+                          background: active ? 'var(--sh-card)' : 'transparent',
+                          color: active ? 'var(--sh-fg)' : 'var(--sh-muted-fg)',
+                          fontSize: 11.5,
+                          fontWeight: active ? 600 : 500,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {preset.shortLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           <div>

@@ -166,9 +166,41 @@ export class OpenCodeDriver implements BodyDriver {
         throw new Error('OpenCode ACP 未返回有效的 sessionId。');
       }
 
+      let activeModel = context.member.body.model?.trim() ?? '';
+      if (activeModel) {
+        await peer
+          .request(
+            'session/set_config_option',
+            { sessionId, configId: 'model', value: activeModel },
+            context.signal
+          )
+          .catch(() => undefined);
+      }
+
       return {
         bodyKind: 'opencode',
         isAlive: () => peer.isAlive(),
+        reconfigure: async (nextBody): Promise<boolean> => {
+          const nextModel = nextBody.model?.trim() ?? '';
+          if (activeModel && !nextModel) {
+            return false;
+          }
+          if (nextModel && nextModel !== activeModel) {
+            if (!peer.isAlive()) return false;
+            try {
+              await peer.request('session/set_config_option', {
+                sessionId,
+                configId: 'model',
+                value: nextModel,
+              });
+              activeModel = nextModel;
+              return true;
+            } catch {
+              return false;
+            }
+          }
+          return true;
+        },
         sendTurn: (prompt: string, signal: AbortSignal): AsyncIterable<MemberStreamEvent> => {
           if (!peer.isAlive()) {
             throw new Error('OpenCode 身体进程已离线。');
