@@ -1,4 +1,4 @@
-const STYLE_ELEMENT_ID = "dsh-agent-family-styles";
+const STYLE_ELEMENT_ID = 'dsh-agent-family-styles';
 
 /**
  * 纯正 shadcn/ui (Zinc 语义色板) 设计系统：
@@ -570,8 +570,32 @@ html.light .dshfam-root,
 /* Rich Markdown Content */
 .sh-prose {
   font-size: 13px;
-  line-height: 1.62;
+  line-height: 1.64;
   word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.sh-host-markdown {
+  font-size: var(--dsh-content-font-size, 13.5px);
+  line-height: calc(21px + var(--dsh-content-font-delta, 0px));
+  font-family: var(--dsw-font-family, var(--sh-font-sans));
+  color: var(--dsw-alias-label-primary, inherit);
+}
+
+.sh-host-markdown a[href*="__family_member__/"],
+.sh-host-markdown button[title*="查看家庭成员"] {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--sh-accent);
+  border: 1px solid var(--sh-border);
+  font-family: var(--sh-font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
 }
 
 .sh-prose p {
@@ -588,7 +612,180 @@ html.light .dshfam-root,
 }
 
 .sh-prose li {
-  margin: 2px 0;
+  margin: 2.5px 0;
+}
+
+.sh-md-h {
+  margin: 12px 0 6px;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+
+.sh-md-h:first-child {
+  margin-top: 0;
+}
+
+.sh-md-h1 { font-size: 17px; padding-bottom: 4px; border-bottom: 1px solid var(--sh-border); }
+.sh-md-h2 { font-size: 15px; padding-bottom: 3px; border-bottom: 1px solid var(--sh-border); }
+.sh-md-h3 { font-size: 13.8px; }
+.sh-md-h4, .sh-md-h5, .sh-md-h6 { font-size: 13px; }
+
+.sh-md-hr {
+  border: none;
+  border-top: 1px solid var(--sh-border);
+  margin: 10px 0;
+}
+
+.sh-md-blockquote {
+  margin: 6px 0 8px;
+  padding: 4px 11px;
+  border-left: 3px solid var(--sh-border);
+  color: var(--sh-muted-fg);
+  background: rgba(128, 128, 128, 0.05);
+  border-radius: 0 6px 6px 0;
+}
+
+.sh-md-table-wrap {
+  margin: 8px 0;
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--sh-border);
+}
+
+.sh-md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.2px;
+}
+
+.sh-md-table th,
+.sh-md-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--sh-border);
+  text-align: left;
+}
+
+.sh-md-table th {
+  background: var(--sh-muted);
+  font-weight: 600;
+}
+
+.sh-md-table tr:last-child td {
+  border-bottom: none;
+}
+
+.sh-md-link,
+.sh-md-link-btn {
+  color: #3b82f6;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sh-inline-file-link {
+  cursor: pointer;
+  color: inherit;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.sh-inline-file-link:hover {
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+/* Deliverable File Changes Card */
+.sh-deliverable-card {
+  margin-top: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--sh-border);
+  background: var(--sh-muted);
+  overflow: hidden;
+}
+
+.sh-deliverable-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.sh-deliverable-head:hover {
+  background: var(--sh-accent);
+}
+
+.sh-deliverable-list {
+  border-top: 1px solid var(--sh-border);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--sh-card);
+}
+
+.sh-deliverable-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  font-size: 11.8px;
+}
+
+.sh-deliverable-row[data-clickable="true"] {
+  cursor: pointer;
+}
+
+.sh-deliverable-row[data-clickable="true"]:hover {
+  background: var(--sh-accent);
+}
+
+.sh-deliverable-kind {
+  width: 17px;
+  height: 17px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--sh-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.sh-deliverable-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--sh-font-mono);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sh-deliverable-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--sh-font-mono);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.sh-deliverable-open-icon {
+  opacity: 0.45;
+  transition: opacity 0.12s ease;
+}
+
+.sh-deliverable-row:hover .sh-deliverable-open-icon {
+  opacity: 1;
 }
 
 .sh-inline-code {
@@ -784,7 +981,8 @@ html.light .dshfam-root,
 }
 
 /* Overlay Sheet & CommandDialog */
-.sh-backdrop {
+.sh-backdrop,
+.sh-sheet-backdrop {
   position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, 0.48);
@@ -804,6 +1002,43 @@ html.light .dshfam-root,
   display: flex;
   flex-direction: column;
   animation: sh-slide-left 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.sh-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--sh-border);
+}
+
+.sh-sheet-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+}
+
+.sh-sheet-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--sh-border);
+  background: var(--sh-sidebar);
+}
+
+.sh-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.sh-hint {
+  font-size: 11px;
+  color: var(--sh-muted-fg);
+  line-height: 1.45;
 }
 
 .sh-dialog-backdrop {
@@ -997,12 +1232,12 @@ html.light .dshfam-root,
 `;
 
 export function ensureFamilyStyles(): () => void {
-  if (typeof document === "undefined") {
+  if (typeof document === 'undefined') {
     return () => undefined;
   }
   let el = document.getElementById(STYLE_ELEMENT_ID) as HTMLStyleElement | null;
   if (!el) {
-    el = document.createElement("style");
+    el = document.createElement('style');
     el.id = STYLE_ELEMENT_ID;
     document.head.appendChild(el);
   }

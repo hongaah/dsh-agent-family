@@ -90,7 +90,33 @@ export class OpenCodeDriver implements BodyDriver {
             serializedToolCall.includes('phone_contacts') ||
             serializedToolCall.includes('phone_call') ||
             serializedToolCall.includes('phone_group_discuss') ||
-            serializedToolCall.includes('phone_read_dsh_session');
+            serializedToolCall.includes('phone_read_dsh_session') ||
+            serializedToolCall.includes('phone_workspace_board');
+
+          if (!isPhoneTool && context.checkWorkspaceOperation) {
+            const wsVerdict = context.checkWorkspaceOperation({
+              toolName: title,
+              commandText: serializedToolCall,
+              rawInput: toolCall,
+            });
+            if (wsVerdict.action !== 'ok') {
+              const denyOpt = options.find((o) => o.kind === 'deny');
+              peer.respond(id, {
+                outcome: {
+                  outcome: 'selected',
+                  optionId: denyOpt?.optionId ?? 'reject',
+                },
+              });
+              activeQueue?.push({
+                kind: 'status',
+                summary:
+                  wsVerdict.action === 'conflict'
+                    ? `⚡ 防撞锁保护：等待 @${wsVerdict.holderMemberId} 释放 ${wsVerdict.conflictingPath}`
+                    : '⚡ 同目录并发保护：已拦截全局破坏性 Git 命令',
+              });
+              return;
+            }
+          }
 
           const verdict = decidePermissionAction(activePermissionMode, {
             toolName: title,

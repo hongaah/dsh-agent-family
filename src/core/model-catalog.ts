@@ -91,7 +91,7 @@ export class ModelCatalogService {
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4500);
+    const timer = setTimeout(() => controller.abort(), 10_000);
     const peer = new JsonRpcStdioPeer({
       executable,
       args: ['app-server', '--stdio'],

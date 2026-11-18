@@ -1,30 +1,27 @@
-import { randomUUID } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-import { join } from "node:path";
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-import type { FamilyHub } from "./family-hub.ts";
-import type { MemberRegistry } from "./member-registry.ts";
+import type { FamilyHub } from './family-hub.ts';
+import { resolveHumanDisplayLabel } from './family-profile.ts';
+import type { MemberRegistry } from './member-registry.ts';
+import { MemberTurnStallError } from './turn-watchdog.ts';
 import type {
   FamilyGroupRoom,
   FamilyMember,
   GroupMessage,
   GroupStreamingDraft,
-} from "./types.ts";
+  WorkspaceFileChange,
+} from './types.ts';
 
 export const MAX_GROUP_RELAY_TURNS = 6;
-export const MAIN_GROUP_ID = "family-main";
+export const MAIN_GROUP_ID = 'family-main';
 
 interface MutableGroupRoom {
   readonly id: string;
   title: string;
   readonly scopeId: string;
-  memberIds: "all_enabled" | readonly string[];
+  memberIds: 'all_enabled' | readonly string[];
   messages: GroupMessage[];
   readCursors: Record<string, number>;
   lastHumanReadCount: number;
@@ -36,13 +33,10 @@ interface MutableGroupRoom {
 }
 
 function computeRoomUnreadCount(room: MutableGroupRoom): number {
-  const start = Math.max(
-    0,
-    Math.min(room.lastHumanReadCount, room.messages.length),
-  );
+  const start = Math.max(0, Math.min(room.lastHumanReadCount, room.messages.length));
   let count = 0;
   for (let i = start; i < room.messages.length; i += 1) {
-    if (room.messages[i]?.senderId !== "human") {
+    if (room.messages[i]?.senderId !== 'human') {
       count += 1;
     }
   }
@@ -51,17 +45,13 @@ function computeRoomUnreadCount(room: MutableGroupRoom): number {
 
 export function extractMemberMentions(
   text: string,
-  validMemberIds: ReadonlySet<string>,
+  validMemberIds: ReadonlySet<string>
 ): string[] {
   const found: string[] = [];
   const regex = /@([a-z][a-z0-9-]{0,31})\b/gu;
   for (const match of text.matchAll(regex)) {
     const candidate = match[1];
-    if (
-      candidate &&
-      validMemberIds.has(candidate) &&
-      !found.includes(candidate)
-    ) {
+    if (candidate && validMemberIds.has(candidate) && !found.includes(candidate)) {
       found.push(candidate);
     }
   }
@@ -70,7 +60,7 @@ export function extractMemberMentions(
 
 function isPassReply(text: string): boolean {
   const trimmed = text.trim();
-  return trimmed === "" || /^\[?\s*PASS\s*\]?[。.!！]*$/iu.test(trimmed);
+  return trimmed === '' || /^\[?\s*PASS\s*\]?[。.!！]*$/iu.test(trimmed);
 }
 
 export class GroupChatEngine {
@@ -79,11 +69,7 @@ export class GroupChatEngine {
   private readonly storageDir?: string;
   private readonly rooms = new Map<string, MutableGroupRoom>();
 
-  public constructor(
-    hub: FamilyHub,
-    registry: MemberRegistry,
-    storageDir?: string,
-  ) {
+  public constructor(hub: FamilyHub, registry: MemberRegistry, storageDir?: string) {
     this.hub = hub;
     this.registry = registry;
     this.storageDir = storageDir;
@@ -94,10 +80,7 @@ export class GroupChatEngine {
     return this.toImmutable(this.ensureMainRoom(scopeId));
   }
 
-  public getRoom(
-    scopeId: string,
-    groupId: string,
-  ): FamilyGroupRoom | undefined {
+  public getRoom(scopeId: string, groupId: string): FamilyGroupRoom | undefined {
     if (groupId === MAIN_GROUP_ID) {
       return this.getOrCreateMainRoom(scopeId);
     }
@@ -106,7 +89,7 @@ export class GroupChatEngine {
   }
 
   public listRooms(scopeId: string): readonly FamilyGroupRoom[] {
-    if (!scopeId.startsWith("family-")) {
+    if (!scopeId.startsWith('family-')) {
       this.ensureMainRoom(scopeId);
     }
     const list: FamilyGroupRoom[] = [];
@@ -119,12 +102,12 @@ export class GroupChatEngine {
   }
 
   public listAllRooms(ensureScopeId?: string): readonly FamilyGroupRoom[] {
-    if (ensureScopeId && !ensureScopeId.startsWith("family-")) {
+    if (ensureScopeId && !ensureScopeId.startsWith('family-')) {
       this.ensureMainRoom(ensureScopeId);
     }
     const list: FamilyGroupRoom[] = [];
     for (const room of this.rooms.values()) {
-      if (room.scopeId.startsWith("family-")) continue;
+      if (room.scopeId.startsWith('family-')) continue;
       list.push(this.toImmutable(room));
     }
     return list;
@@ -133,17 +116,14 @@ export class GroupChatEngine {
   public createRoom(input: {
     readonly scopeId: string;
     readonly title: string;
-    readonly memberIds: "all_enabled" | readonly string[];
+    readonly memberIds: 'all_enabled' | readonly string[];
   }): FamilyGroupRoom {
     const id = `grp-${randomUUID().slice(0, 8)}`;
     const room: MutableGroupRoom = {
       id,
-      title: input.title.trim() || "专题讨论群",
+      title: input.title.trim() || '专题讨论群',
       scopeId: input.scopeId,
-      memberIds:
-        input.memberIds === "all_enabled"
-          ? "all_enabled"
-          : [...input.memberIds],
+      memberIds: input.memberIds === 'all_enabled' ? 'all_enabled' : [...input.memberIds],
       messages: [],
       readCursors: {},
       lastHumanReadCount: 0,
@@ -155,7 +135,7 @@ export class GroupChatEngine {
     this.rooms.set(this.roomKey(input.scopeId, id), room);
     this.persistRoomsToDisk();
     const snapshot = this.toImmutable(room);
-    this.hub.emit({ type: "group_updated", room: snapshot });
+    this.hub.emit({ type: 'group_updated', room: snapshot });
     return snapshot;
   }
 
@@ -163,8 +143,7 @@ export class GroupChatEngine {
     const room =
       groupId === MAIN_GROUP_ID
         ? this.ensureMainRoom(scopeId)
-        : (this.rooms.get(this.roomKey(scopeId, groupId)) ??
-          this.ensureMainRoom(scopeId));
+        : (this.rooms.get(this.roomKey(scopeId, groupId)) ?? this.ensureMainRoom(scopeId));
     room.relayAbort?.abort();
     room.relayAbort = null;
     room.messages = [];
@@ -183,8 +162,7 @@ export class GroupChatEngine {
     const room =
       groupId === MAIN_GROUP_ID
         ? this.ensureMainRoom(scopeId)
-        : (this.rooms.get(this.roomKey(scopeId, groupId)) ??
-          this.ensureMainRoom(scopeId));
+        : (this.rooms.get(this.roomKey(scopeId, groupId)) ?? this.ensureMainRoom(scopeId));
     if (room.lastHumanReadCount !== room.messages.length) {
       room.lastHumanReadCount = room.messages.length;
       this.persistRoomsToDisk();
@@ -243,13 +221,13 @@ export class GroupChatEngine {
       groupId: room.id,
       senderId: input.senderId,
       senderName: input.senderName,
-      senderAvatar: input.senderAvatar ?? "human",
+      senderAvatar: input.senderAvatar ?? 'human',
       content: input.content.trim(),
       mentions,
       createdAt: new Date().toISOString(),
     };
     room.messages.push(triggerMsg);
-    if (input.senderId === "human") {
+    if (input.senderId === 'human') {
       room.lastHumanReadCount = room.messages.length;
     }
     if (memberIdSet.has(input.senderId)) {
@@ -317,8 +295,8 @@ export class GroupChatEngine {
           senderId: speaker.id,
           senderName: speaker.name,
           senderAvatar: speaker.avatar,
-          content: "",
-          statusSummary: "思考中…",
+          content: '',
+          statusSummary: '思考中…',
         };
         this.broadcast(room);
 
@@ -329,15 +307,16 @@ export class GroupChatEngine {
           speaker,
           unreadMessages,
           activeMembers,
-          allowPass,
+          allowPass
         );
 
-        let replyText = "";
+        let replyText = '';
+        let turnChangedFiles: readonly WorkspaceFileChange[] = [];
         try {
           const outcome = await this.hub.sendMemberMessage({
             scopeId: input.scopeId,
             memberId: speaker.id,
-            senderRole: "peer",
+            senderRole: 'peer',
             senderName: room.title,
             message: promptForSpeaker,
             cwd: input.cwd,
@@ -347,9 +326,7 @@ export class GroupChatEngine {
             onDelta: (accumulated) => {
               if (relayController.signal.aborted) return;
               // 若正在输出 [PASS] 前缀则暂不闪现废话草稿
-              if (
-                /^\[?\s*P(?:A(?:S(?:S)?)?)?\s*\]?$/iu.test(accumulated.trim())
-              ) {
+              if (/^\[?\s*P(?:A(?:S(?:S)?)?)?\s*\]?$/iu.test(accumulated.trim())) {
                 return;
               }
               room.streamingDraft = {
@@ -367,7 +344,7 @@ export class GroupChatEngine {
                 senderId: speaker.id,
                 senderName: speaker.name,
                 senderAvatar: speaker.avatar,
-                content: room.streamingDraft?.content ?? "",
+                content: room.streamingDraft?.content ?? '',
                 statusSummary: summary,
               };
               this.broadcast(room);
@@ -375,35 +352,55 @@ export class GroupChatEngine {
             signal: relayController.signal,
           });
           replyText = outcome.finalText.trim();
-        } catch {
+          turnChangedFiles = outcome.changedFiles;
+        } catch (err) {
           room.streamingDraft = null;
           if (relayController.signal.aborted) break;
+          if (err instanceof MemberTurnStallError) {
+            room.messages.push({
+              id: randomUUID(),
+              groupId: room.id,
+              senderId: 'system',
+              senderName: '家庭管家',
+              senderAvatar: '⏱️',
+              content: `💤 ${speaker.name} (@${speaker.id}) 思考超时未响应，已自动重启恢复身体并跳过，由下一位家人继续接力。`,
+              mentions: [],
+              createdAt: new Date().toISOString(),
+            });
+            this.persistRoomsToDisk();
+            this.broadcast(room);
+          }
           continue;
         }
 
         room.streamingDraft = null;
         if (relayController.signal.aborted) break;
 
-        if (isPassReply(replyText)) {
+        if (isPassReply(replyText) && turnChangedFiles.length === 0) {
           room.lastPassMemberName = speaker.name;
           this.persistRoomsToDisk();
           this.broadcast(room);
           continue;
         }
 
+        const effectiveReplyText =
+          isPassReply(replyText) && turnChangedFiles.length > 0
+            ? `已完成 ${turnChangedFiles.length} 个工作区文件的修改。`
+            : replyText;
+
         substantiveTurns += 1;
-        const replyMentions = extractMemberMentions(
-          replyText,
-          memberIdSet,
-        ).filter((id) => id !== speaker.id);
+        const replyMentions = extractMemberMentions(effectiveReplyText, memberIdSet).filter(
+          (id) => id !== speaker.id
+        );
         const speakerMsg: GroupMessage = {
           id: randomUUID(),
           groupId: room.id,
           senderId: speaker.id,
           senderName: speaker.name,
           senderAvatar: speaker.avatar,
-          content: replyText,
+          content: effectiveReplyText,
           mentions: replyMentions,
+          ...(turnChangedFiles.length > 0 ? { changedFiles: turnChangedFiles } : {}),
           createdAt: new Date().toISOString(),
         };
         room.messages.push(speakerMsg);
@@ -434,9 +431,9 @@ export class GroupChatEngine {
     if (existing) return existing;
     const created: MutableGroupRoom = {
       id: MAIN_GROUP_ID,
-      title: "家庭总群",
+      title: '家庭总群',
       scopeId,
-      memberIds: "all_enabled",
+      memberIds: 'all_enabled',
       messages: [],
       readCursors: {},
       lastHumanReadCount: 0,
@@ -451,7 +448,7 @@ export class GroupChatEngine {
 
   private resolveRoomMembers(room: MutableGroupRoom): readonly FamilyMember[] {
     const enabled = this.registry.listEnabled();
-    if (room.memberIds === "all_enabled") {
+    if (room.memberIds === 'all_enabled') {
       return enabled;
     }
     const allowed = new Set(room.memberIds);
@@ -463,22 +460,23 @@ export class GroupChatEngine {
     receiver: FamilyMember,
     unread: readonly GroupMessage[],
     roomMembers: readonly FamilyMember[],
-    allowPass: boolean,
+    allowPass: boolean
   ): string {
     const peersDesc = roomMembers
       .filter((m) => m.id !== receiver.id)
       .map((m) => `${m.name}(@${m.id})`)
-      .join("、");
+      .join('、');
 
+    const humanLabel = resolveHumanDisplayLabel(this.hub.getSharedProfile());
     const transcript = unread
       .map((m) => {
-        const handle =
-          m.senderId === "human" || m.senderId === "lead"
-            ? ""
-            : ` (@${m.senderId})`;
+        if (m.senderId === 'human') {
+          return `[${humanLabel}]: ${m.content}`;
+        }
+        const handle = m.senderId === 'lead' ? '' : ` (@${m.senderId})`;
         return `[${m.senderName}${handle}]: ${m.content}`;
       })
-      .join("\n\n");
+      .join('\n\n');
 
     const passGuideline = allowPass
       ? `- 若前面的家人已经接得很自然到位、你没什么特别想补充或吐槽的，请只回复 \`[PASS]\` 安静旁听，不必硬凑客套话。`
@@ -486,7 +484,7 @@ export class GroupChatEngine {
 
     return [
       `🏠 【家庭群聊「${room.title}」新消息】`,
-      `群里的家人：${peersDesc || "暂无其他成员"}`,
+      `群里的家人：${peersDesc || '暂无其他成员'}`,
       `---`,
       transcript,
       `---`,
@@ -495,11 +493,11 @@ export class GroupChatEngine {
       `- **自动分辨「日常闲聊」与「正经干活」**：如果上面只是问候、日常闲聊、吐槽、聊生活或活跃气氛，请彻底卸下工作包袱和班味，按你自己的脾气性格自然接梗、关心或跟家人互怼逗乐（口语化、简短有温度），**严禁主动扯代码/架构/工作内容，更严禁在群里给别人派活或安排任务**！只有当大家明确提出具体开发任务、Bug 或技术方案探讨时，再结合你的看家手艺（${receiver.specialty}）认真发表见解或推进；`,
       `- 像真人一家人聊天一样自然互动，除非确实有话要专门问某位家人，否则不要乱 \`@成员ID\` 点名派活；`,
       `${passGuideline}）`,
-    ].join("\n");
+    ].join('\n');
   }
 
   private broadcast(room: MutableGroupRoom): void {
-    this.hub.emit({ type: "group_updated", room: this.toImmutable(room) });
+    this.hub.emit({ type: 'group_updated', room: this.toImmutable(room) });
   }
 
   private toImmutable(room: MutableGroupRoom): FamilyGroupRoom {
@@ -507,8 +505,7 @@ export class GroupChatEngine {
       id: room.id,
       title: room.title,
       scopeId: room.scopeId,
-      memberIds:
-        room.memberIds === "all_enabled" ? "all_enabled" : [...room.memberIds],
+      memberIds: room.memberIds === 'all_enabled' ? 'all_enabled' : [...room.memberIds],
       messages: [...room.messages],
       readCursors: { ...room.readCursors },
       unreadCount: computeRoomUnreadCount(room),
@@ -527,7 +524,7 @@ export class GroupChatEngine {
     if (!this.storageDir) return;
     try {
       mkdirSync(this.storageDir, { recursive: true });
-      const filePath = join(this.storageDir, "group-rooms.json");
+      const filePath = join(this.storageDir, 'group-rooms.json');
       const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
       const roomsData = Array.from(this.rooms.values()).map((r) => ({
         id: r.id,
@@ -538,14 +535,10 @@ export class GroupChatEngine {
         readCursors: r.readCursors,
         lastHumanReadCount: Math.max(
           0,
-          r.lastHumanReadCount - Math.max(0, r.messages.length - 120),
+          r.lastHumanReadCount - Math.max(0, r.messages.length - 120)
         ),
       }));
-      writeFileSync(
-        tmpPath,
-        `${JSON.stringify({ version: 1, rooms: roomsData }, null, 2)}\n`,
-        "utf8",
-      );
+      writeFileSync(tmpPath, `${JSON.stringify({ version: 1, rooms: roomsData }, null, 2)}\n`, 'utf8');
       renameSync(tmpPath, filePath);
     } catch {
       // ignore UI transcript persistence errors
@@ -554,51 +547,39 @@ export class GroupChatEngine {
 
   private restoreRoomsFromDisk(): void {
     if (!this.storageDir) return;
-    const filePath = join(this.storageDir, "group-rooms.json");
+    const filePath = join(this.storageDir, 'group-rooms.json');
     if (!existsSync(filePath)) return;
     try {
-      const raw = JSON.parse(readFileSync(filePath, "utf8")) as Record<
-        string,
-        unknown
-      >;
+      const raw = JSON.parse(readFileSync(filePath, 'utf8')) as Record<string, unknown>;
       const roomsList = Array.isArray(raw.rooms) ? raw.rooms : [];
       for (const item of roomsList) {
-        if (!item || typeof item !== "object") continue;
+        if (!item || typeof item !== 'object') continue;
         const r = item as Record<string, unknown>;
-        if (
-          typeof r.id !== "string" ||
-          typeof r.scopeId !== "string" ||
-          typeof r.title !== "string"
-        ) {
+        if (typeof r.id !== 'string' || typeof r.scopeId !== 'string' || typeof r.title !== 'string') {
           continue;
         }
-        const memberIds: "all_enabled" | readonly string[] =
-          r.memberIds === "all_enabled"
-            ? "all_enabled"
+        const memberIds: 'all_enabled' | readonly string[] =
+          r.memberIds === 'all_enabled'
+            ? 'all_enabled'
             : Array.isArray(r.memberIds)
-              ? r.memberIds.filter((x): x is string => typeof x === "string")
-              : "all_enabled";
+              ? r.memberIds.filter((x): x is string => typeof x === 'string')
+              : 'all_enabled';
         const messages = Array.isArray(r.messages)
-          ? r.messages.filter((m): m is GroupMessage =>
-              Boolean(
-                m &&
-                typeof m === "object" &&
-                typeof (m as Record<string, unknown>).id === "string",
-              ),
+          ? r.messages.filter(
+              (m): m is GroupMessage =>
+                Boolean(m && typeof m === 'object' && typeof (m as Record<string, unknown>).id === 'string')
             )
           : [];
         const rawCursors =
-          r.readCursors &&
-          typeof r.readCursors === "object" &&
-          !Array.isArray(r.readCursors)
+          r.readCursors && typeof r.readCursors === 'object' && !Array.isArray(r.readCursors)
             ? (r.readCursors as Record<string, unknown>)
             : {};
         const readCursors: Record<string, number> = {};
         for (const [k, v] of Object.entries(rawCursors)) {
-          if (typeof v === "number") readCursors[k] = v;
+          if (typeof v === 'number') readCursors[k] = v;
         }
         const lastHumanReadCount =
-          typeof r.lastHumanReadCount === "number"
+          typeof r.lastHumanReadCount === 'number'
             ? Math.max(0, Math.min(messages.length, r.lastHumanReadCount))
             : messages.length;
         this.rooms.set(this.roomKey(r.scopeId, r.id), {

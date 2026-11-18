@@ -134,6 +134,37 @@ export class ClaudeDriver implements BodyDriver {
                 : {};
             const commandText = typeof toolInput.command === 'string' ? toolInput.command : '';
 
+            const isPhoneTool =
+              toolName.includes('family_phone') || toolName.startsWith('phone_');
+            if (!isPhoneTool && context.checkWorkspaceOperation) {
+              const wsVerdict = context.checkWorkspaceOperation({
+                toolName,
+                commandText,
+                rawInput: toolInput,
+              });
+              if (wsVerdict.action !== 'ok') {
+                proc.writeJsonLine({
+                  type: 'control_response',
+                  response: {
+                    subtype: 'success',
+                    request_id: requestId,
+                    response: {
+                      behavior: 'deny',
+                      message: wsVerdict.message,
+                    },
+                  },
+                });
+                activeQueue.push({
+                  kind: 'status',
+                  summary:
+                    wsVerdict.action === 'conflict'
+                      ? `⚡ 防撞锁保护：等待 @${wsVerdict.holderMemberId} 释放 ${wsVerdict.conflictingPath}`
+                      : '⚡ 同目录并发保护：已拦截全局破坏性 Git 命令',
+                });
+                return;
+              }
+            }
+
             const verdict = decidePermissionAction(activePermissionMode, {
               toolName,
               commandText,

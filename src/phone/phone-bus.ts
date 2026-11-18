@@ -118,6 +118,23 @@ const PHONE_TOOL_SCHEMAS = [
         openWorldHint: false,
       },
     },
+    {
+      name: 'phone_workspace_board',
+      description:
+        '查看当前共享工作目录的实时协作黑板：了解此刻有哪些家庭成员正在同一目录并行执行什么任务、锁定占用了哪些文件（File Lease），以及最近 10 分钟刚修改过哪些文件。在多人并行修改公共文件或等待队友释放文件前可随时调用。',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+      annotations: {
+        title: '查看共享工作区实时协作黑板',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
 ] as const;
 
 /**
@@ -347,26 +364,43 @@ export class FamilyPhoneBus {
           ? (params.arguments as Record<string, unknown>)
           : {};
 
+      const reqAbort = new AbortController();
+      res.on('close', () => {
+        if (!res.writableEnded) {
+          reqAbort.abort();
+        }
+      });
+
       try {
-        const text = await this.dispatchToolCall(scopeId, callerId, toolName, rawArgs);
-        sendJson(res, 200, {
-          jsonrpc: '2.0',
-          id,
-          result: {
-            content: [{ type: 'text', text }],
-            isError: false,
-          },
-        });
+        const text = await this.dispatchToolCall(
+          scopeId,
+          callerId,
+          toolName,
+          rawArgs,
+          reqAbort.signal
+        );
+        if (!res.writableEnded) {
+          sendJson(res, 200, {
+            jsonrpc: '2.0',
+            id,
+            result: {
+              content: [{ type: 'text', text }],
+              isError: false,
+            },
+          });
+        }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        sendJson(res, 200, {
-          jsonrpc: '2.0',
-          id,
-          result: {
-            content: [{ type: 'text', text: `家庭手机调用异常: ${msg}` }],
-            isError: true,
-          },
-        });
+        if (!res.writableEnded) {
+          const msg = err instanceof Error ? err.message : String(err);
+          sendJson(res, 200, {
+            jsonrpc: '2.0',
+            id,
+            result: {
+              content: [{ type: 'text', text: `家庭手机调用异常: ${msg}` }],
+              isError: true,
+            },
+          });
+        }
       }
       return;
     }
@@ -382,10 +416,15 @@ export class FamilyPhoneBus {
     scopeId: string,
     callerId: string,
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    signal?: AbortSignal
   ): Promise<string> {
     if (toolName === 'phone_contacts') {
       return this.hub.handlePhoneContacts(scopeId, callerId);
+    }
+
+    if (toolName === 'phone_workspace_board') {
+      return this.hub.handlePhoneWorkspaceBoard(scopeId, callerId);
     }
 
     if (toolName === 'phone_call') {
@@ -403,6 +442,7 @@ export class FamilyPhoneBus {
         toMemberId: to,
         intent,
         message,
+        signal,
       });
     }
 

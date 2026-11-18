@@ -6,10 +6,10 @@
  * - 全仓严格类型化，禁用 `any`。
  */
 
-export const BODY_KINDS = ["claude", "codex", "opencode", "dsh"] as const;
+export const BODY_KINDS = ['claude', 'codex', 'opencode', 'dsh'] as const;
 export type BodyKind = (typeof BODY_KINDS)[number];
 
-export const PERMISSION_MODES = ["ask", "auto", "full_access"] as const;
+export const PERMISSION_MODES = ['ask', 'auto', 'full_access'] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 export interface BodySpec {
@@ -90,19 +90,35 @@ export interface StarterMemberTemplate {
   readonly soulPrompt: string;
 }
 
+export interface FamilySharedProfile {
+  /** 用户的真实姓名或昵称（例如「杨杰」） */
+  readonly userName: string;
+  /** 全体家庭成员对用户的统一称呼（例如「杰哥」「老板」「主理人」） */
+  readonly userHonorific: string;
+  /** 全体成员共享的家庭公约、全局提示词或公共背景知识 */
+  readonly sharedPrompt: string;
+  readonly updatedAt?: string;
+}
+
+export interface UpdateFamilyProfileInput {
+  readonly userName?: string;
+  readonly userHonorific?: string;
+  readonly sharedPrompt?: string;
+}
+
 export interface BodyHealthStatus {
   readonly kind: BodyKind;
   readonly label: string;
   readonly available: boolean;
   readonly executablePath?: string;
-  readonly mode: "cli" | "dsh-native";
+  readonly mode: 'cli' | 'dsh-native';
   readonly note?: string;
 }
 
 export interface ApprovalOption {
   readonly optionId: string;
   readonly label: string;
-  readonly kind?: "allow" | "allow_always" | "deny";
+  readonly kind?: 'allow' | 'allow_always' | 'deny';
 }
 
 export interface PendingApproval {
@@ -121,25 +137,25 @@ export interface PendingApproval {
 }
 
 export type MemberActivityState =
-  | "sleeping"
-  | "idle"
-  | "working"
-  | "in_call"
-  | "awaiting_approval"
-  | "error";
+  | 'sleeping'
+  | 'idle'
+  | 'working'
+  | 'in_call'
+  | 'awaiting_approval'
+  | 'error';
 
 export type MemberStreamEvent =
-  | { readonly kind: "text_delta"; readonly delta: string }
-  | { readonly kind: "status"; readonly summary: string }
+  | { readonly kind: 'text_delta'; readonly delta: string }
+  | { readonly kind: 'status'; readonly summary: string }
   | {
-      readonly kind: "approval_requested";
+      readonly kind: 'approval_requested';
       readonly requestId: string;
       readonly title: string;
       readonly detail?: string;
       readonly options: readonly ApprovalOption[];
       readonly allowCustomInput?: boolean;
     }
-  | { readonly kind: "turn_done"; readonly finalText: string };
+  | { readonly kind: 'turn_done'; readonly finalText: string };
 
 export interface PhoneMcpLaunchSpec {
   readonly command: string;
@@ -149,13 +165,34 @@ export interface PhoneMcpLaunchSpec {
   readonly bearerToken: string;
 }
 
+export type WorkspaceFileChangeKind = 'added' | 'modified' | 'deleted';
+
+export interface WorkspaceFileChange {
+  /** 相对于会话工作目录 cwd 的规范化路径（使用 `/` 分隔） */
+  readonly path: string;
+  readonly kind: WorkspaceFileChangeKind;
+  readonly additions?: number;
+  readonly deletions?: number;
+  /** 最近修改该文件的成员称呼或 ID */
+  readonly byMemberName?: string;
+}
+
+export interface PendingMainSyncSummary {
+  readonly scopeId: string;
+  readonly changedFiles: readonly WorkspaceFileChange[];
+  readonly noteCount: number;
+  readonly updatedAt: string;
+}
+
 export interface MemberChatEntry {
   readonly id: string;
-  readonly role: "human" | "lead" | "peer" | "member" | "system";
+  readonly role: 'human' | 'lead' | 'peer' | 'member' | 'system';
   readonly authorName: string;
   readonly content: string;
   readonly statusSummary?: string;
   readonly streaming?: boolean;
+  /** 该轮成员执行实际落盘的文件变更清单 */
+  readonly changedFiles?: readonly WorkspaceFileChange[];
   readonly createdAt: string;
 }
 
@@ -171,7 +208,7 @@ export interface MemberRuntimeSnapshot {
   readonly lastActiveAt?: string;
 }
 
-export type PhoneCallIntent = "discuss" | "request_help" | "sync";
+export type PhoneCallIntent = 'discuss' | 'request_help' | 'sync';
 
 export interface PhoneCallRecord {
   readonly id: string;
@@ -182,12 +219,7 @@ export interface PhoneCallRecord {
   readonly toMemberName: string;
   readonly intent: PhoneCallIntent;
   readonly message: string;
-  readonly status:
-    | "ringing"
-    | "completed"
-    | "busy_rejected"
-    | "hop_limited"
-    | "failed";
+  readonly status: 'ringing' | 'completed' | 'busy_rejected' | 'hop_limited' | 'failed';
   readonly reply?: string;
   readonly createdAt: string;
   readonly finishedAt?: string;
@@ -203,6 +235,8 @@ export interface GroupMessage {
   readonly content: string;
   /** 消息正文中解析出的有效被 `@` 成员 ID 列表 */
   readonly mentions: readonly string[];
+  /** 该成员在本轮群聊发言中实际落盘的文件变更清单 */
+  readonly changedFiles?: readonly WorkspaceFileChange[];
   readonly createdAt: string;
 }
 
@@ -220,7 +254,7 @@ export interface FamilyGroupRoom {
   readonly title: string;
   readonly scopeId: string;
   /** `'all_enabled'` 动态涵盖当前所有在岗成员；数组为固定成员子集 */
-  readonly memberIds: "all_enabled" | readonly string[];
+  readonly memberIds: 'all_enabled' | readonly string[];
   readonly messages: readonly GroupMessage[];
   /** 每个成员已投递到的消息下标，用于切片计算「未读群消息增量」 */
   readonly readCursors: Readonly<Record<string, number>>;
@@ -233,28 +267,16 @@ export interface FamilyGroupRoom {
 }
 
 export type FamilyFocusTarget =
-  | { readonly kind: "group"; readonly groupId: string }
-  | { readonly kind: "member"; readonly memberId: string };
+  | { readonly kind: 'group'; readonly groupId: string }
+  | { readonly kind: 'member'; readonly memberId: string };
 
 export type FamilyRealtimeEvent =
-  | {
-      readonly type: "roster_updated";
-      readonly members: readonly FamilyMember[];
-    }
-  | {
-      readonly type: "member_runtime";
-      readonly snapshot: MemberRuntimeSnapshot;
-    }
-  | { readonly type: "approval_opened"; readonly approval: PendingApproval }
-  | {
-      readonly type: "approval_closed";
-      readonly approvalId: string;
-      readonly selectedOptionId?: string;
-    }
-  | { readonly type: "phone_call_updated"; readonly record: PhoneCallRecord }
-  | { readonly type: "group_updated"; readonly room: FamilyGroupRoom }
-  | {
-      readonly type: "focus_requested";
-      readonly scopeId: string;
-      readonly target: FamilyFocusTarget;
-    };
+  | { readonly type: 'roster_updated'; readonly members: readonly FamilyMember[] }
+  | { readonly type: 'profile_updated'; readonly profile: FamilySharedProfile }
+  | { readonly type: 'member_runtime'; readonly snapshot: MemberRuntimeSnapshot }
+  | { readonly type: 'approval_opened'; readonly approval: PendingApproval }
+  | { readonly type: 'approval_closed'; readonly approvalId: string; readonly selectedOptionId?: string }
+  | { readonly type: 'phone_call_updated'; readonly record: PhoneCallRecord }
+  | { readonly type: 'group_updated'; readonly room: FamilyGroupRoom }
+  | { readonly type: 'main_sync_updated'; readonly summary: PendingMainSyncSummary }
+  | { readonly type: 'focus_requested'; readonly scopeId: string; readonly target: FamilyFocusTarget };

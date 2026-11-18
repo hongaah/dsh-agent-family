@@ -99,6 +99,19 @@ export class CodexDriver implements BodyDriver {
             return;
           }
           if (typeof item.type === 'string' && item.type !== 'agentMessage' && item.type !== 'userMessage') {
+            if (context.checkWorkspaceOperation) {
+              const itemCmd =
+                typeof item.command === 'string'
+                  ? item.command
+                  : Array.isArray(item.command)
+                    ? item.command.filter((x): x is string => typeof x === 'string').join(' ')
+                    : undefined;
+              context.checkWorkspaceOperation({
+                toolName: item.type,
+                commandText: itemCmd,
+                rawInput: item,
+              });
+            }
             activeQueue.push({ kind: 'status', summary: `执行 ${item.type}` });
           }
           return;
@@ -188,6 +201,25 @@ export class CodexDriver implements BodyDriver {
                 : method.includes('fileChange') || method.includes('Patch')
                   ? '修改工作区文件'
                   : method;
+
+          if (context.checkWorkspaceOperation) {
+            const wsVerdict = context.checkWorkspaceOperation({
+              toolName: method,
+              commandText: cmdLabel,
+              rawInput: params,
+            });
+            if (wsVerdict.action !== 'ok') {
+              peer.respond(id, { decision: 'decline', reason: wsVerdict.message });
+              activeQueue?.push({
+                kind: 'status',
+                summary:
+                  wsVerdict.action === 'conflict'
+                    ? `⚡ 防撞锁保护：等待 @${wsVerdict.holderMemberId} 释放 ${wsVerdict.conflictingPath}`
+                    : '⚡ 同目录并发保护：已拦截全局破坏性 Git 命令',
+              });
+              return;
+            }
+          }
 
           const verdict = decidePermissionAction(currentPermissionMode, {
             toolName: method,

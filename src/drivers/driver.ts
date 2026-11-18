@@ -5,6 +5,14 @@ import type {
   MemberStreamEvent,
   PhoneMcpLaunchSpec,
 } from '../core/types.ts';
+import type { WorkspaceToolGuardVerdict } from '../core/workspace-coordinator.ts';
+
+export interface WorkspaceOperationCheckInput {
+  readonly toolName?: string;
+  readonly method?: string;
+  readonly commandText?: string;
+  readonly rawInput?: unknown;
+}
 
 export interface AwakenMemberContext {
   readonly scopeId: string;
@@ -13,6 +21,10 @@ export interface AwakenMemberContext {
   readonly cwd: string;
   readonly phoneMcp: PhoneMcpLaunchSpec;
   readonly signal: AbortSignal;
+  /** 可选同目录并发协作防撞软锁与全局破坏性 Git 命令检查钩子 */
+  readonly checkWorkspaceOperation?: (
+    op: WorkspaceOperationCheckInput
+  ) => WorkspaceToolGuardVerdict;
 }
 
 export interface LiveMemberSession {

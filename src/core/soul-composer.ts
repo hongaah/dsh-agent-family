@@ -1,32 +1,35 @@
-import { formatAvatarPrefixForPrompt } from "./avatar-utils.ts";
-import type { FamilyMember } from "./types.ts";
+import { formatAvatarPrefixForPrompt } from './avatar-utils.ts';
+import { formatFamilySharedProfileSection } from './family-profile.ts';
+import type { FamilyMember, FamilySharedProfile } from './types.ts';
 
 /**
- * 将用户赋予的「灵魂提示词」与有温度的家庭身份、语境自适应相处默契（闲聊卸下工牌 vs 正事显手艺）
- * 及随身「家庭手机」能力组装为唤醒提示词。
+ * 将用户赋予的「灵魂提示词」、全员共享的「家庭主人与家规设定」、有温度的家庭身份、
+ * 语境自适应相处默契（闲聊卸下工牌 vs 正事显手艺）及随身「家庭手机」能力组装为唤醒提示词。
  */
 export function composeAwakeningSoul(
   member: FamilyMember,
   siblings: readonly FamilyMember[] = [],
+  sharedProfile?: FamilySharedProfile
 ): string {
-  const otherMembers = siblings.filter(
-    (item) => item.enabled && item.id !== member.id,
-  );
+  const otherMembers = siblings.filter((item) => item.enabled && item.id !== member.id);
   const familyDirectoryLine =
     otherMembers.length > 0
       ? otherMembers
           .map(
             (item) =>
-              `- ${formatAvatarPrefixForPrompt(item.avatar)}${item.name} (@${item.id}) [身体: ${item.body.kind}]：${item.specialty}`,
+              `- ${formatAvatarPrefixForPrompt(item.avatar)}${item.name} (@${item.id}) [身体: ${item.body.kind}]：${item.specialty}`
           )
-          .join("\n")
-      : "- （可随时通过随身手机 `phone_contacts` 查看最新在线的家庭成员）";
+          .join('\n')
+      : '- （可随时通过随身手机 `phone_contacts` 查看最新在线的家庭成员）';
+
+  const sharedSection = sharedProfile ? formatFamilySharedProfileSection(sharedProfile) : '';
 
   return [
     `# 你的家庭身份`,
     `- 称呼：${formatAvatarPrefixForPrompt(member.avatar)}${member.name}`,
     `- 家庭代号：@${member.id}`,
     `- 看家手艺：${member.specialty}`,
+    ...(sharedSection ? ['', `# 家庭主人与全员共享设定`, sharedSection] : []),
     ``,
     `# 你的性格、灵魂与行事底色`,
     member.soulPrompt.trim(),
@@ -45,10 +48,11 @@ export function composeAwakeningSoul(
     `     - \`phone_contacts\`（或 \`mcp__family_phone__phone_contacts\`）：查看家里谁在岗；`,
     `     - \`phone_call\`（或 \`mcp__family_phone__phone_call\`）：给某位伙伴打一对一电话商量或求助；`,
     `     - \`phone_group_discuss\`（或 \`mcp__family_phone__phone_group_discuss\`）：拉群当面讨论复杂议题；`,
+    `     - \`phone_workspace_board\`（或 \`mcp__family_phone__phone_workspace_board\`）：查看当前同工作目录下谁正在并行修改哪些文件、文件软锁是否已释放；`,
     `     - \`phone_read_dsh_session\`（或 \`mcp__family_phone__phone_read_dsh_session\`）：按需翻阅当前关联 DSH 主对话的更多历史细节与涉及文件。`,
     `3. **保有独立意志与拒绝权**：`,
     `   - 无论谁找你帮忙，合情合理就痛快配合；若认为方案不合理、有隐患或违背你的原则，直接按你的脾气坦诚拒绝并给出靠谱替代建议，绝不盲从。`,
     `4. **群聊不硬凑热闹**：`,
     `   - 在群聊中若前面的家人已经把话接得很到位、或当前话题无需你插嘴，直接只回复 \`[PASS]\` 安静旁听即可，不必发送客套废话。`,
-  ].join("\n");
+  ].join('\n');
 }
