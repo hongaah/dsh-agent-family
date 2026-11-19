@@ -60,6 +60,7 @@ if (!alreadyInstalled) {
     'cordis.patch.yml',
     'package.json',
     'README.md',
+    'LICENSE',
     'scripts/install-desktop.mjs',
   ]) {
     const src = resolve(projectRoot, item);

@@ -1,8 +1,35 @@
 {
   "name": "dsh-agent-family",
   "version": "0.1.0",
-  "description": "智能体家庭（Agents Family）：为本机 CLI（Claude Code、Codex、OpenCode、DSH）赋予独立灵魂，支持随身家庭手机与群聊自治协作",
+  "description": "智能体家庭（Agents Family）：为本机 CLI（Claude Code、Codex、OpenCode、DSH）赋予独立灵魂，支持随身家庭手机与微信式群聊自治协作 · Embodied Multi-CLI Agent Family for DeepSeek Harness",
   "type": "module",
+  "license": "MIT",
+  "author": "hongaah",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hongaah/dsh-agent-family.git"
+  },
+  "homepage": "https://github.com/hongaah/dsh-agent-family#readme",
+  "bugs": {
+    "url": "https://github.com/hongaah/dsh-agent-family/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek",
+    "deepseek-harness",
+    "cordis",
+    "multi-agent",
+    "agent-family",
+    "claude-code",
+    "codex",
+    "opencode",
+    "mcp"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "icon": "assets/icon.svg",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,6 +43,7 @@
     },
     "./client": "./dist/client.js",
     "./phone-mcp": "./dist/phone-mcp.js",
+    "./icon": "./assets/icon.svg",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -24,21 +52,24 @@
     "assets",
     "cordis.patch.yml",
     "README.md",
+    "LICENSE",
     "scripts/install-desktop.mjs"
   ],
   "engines": {
-    "node": ">=22",
+    "node": ">=20.12.0",
     "dsh": ">=0.1.7-rc.1"
   },
   "dsh": {
+    "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
     "compatibility": {
       "dshReleases": {
         "0.2.1-rc.5": "compatible",
-        "0.2.2-rc.1": "compatible",
-        "0.2.2-rc.2": "compatible"
+        "0.2.2-rc.2": "compatible",
+        "0.2.2-rc.3": "compatible",
+        "0.2.2-rc.4": "compatible"
       }
     },
     "client": {
@@ -62,6 +93,7 @@
     "test": "vitest run",
     "install:desktop": "node ./scripts/install-desktop.mjs",
     "uninstall:desktop": "node ./scripts/install-desktop.mjs --remove",
+    "release:check": "node ./scripts/release-check.mjs",
     "prepack": "pnpm run typecheck && pnpm test && pnpm run build"
   },
   "devDependencies": {
